@@ -4,6 +4,8 @@ import categoryRoutes from "./category.routes";
 import productRoutes from "./product.routes";
 import customerRoutes from "./customer.routes";
 import saleRoutes from "./sale.routes";
+import dashboardRoutes from "./dashboard.routes";
+import exchangeRateRoutes from "./exchangeRate.routes";
 
 const router = Router();
 
@@ -20,5 +22,7 @@ router.use("/categories", categoryRoutes);
 router.use("/products", productRoutes);
 router.use("/customers", customerRoutes);
 router.use("/sales", saleRoutes);
+router.use("/dashboard", dashboardRoutes);
+router.use("/exchange-rate", exchangeRateRoutes);  
 
 export default router;
