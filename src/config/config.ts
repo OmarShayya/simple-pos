@@ -24,7 +24,7 @@ const config: Config = {
   env: process.env.NODE_ENV || "development",
   port: parseInt(process.env.PORT || "3000", 10),
   apiPrefix: process.env.API_PREFIX || "/api/v1",
-  corsOrigin: process.env.CORS_ORIGIN || "*",
+  corsOrigin: "*",
   logLevel: process.env.LOG_LEVEL || "info",
   mongodbUri: process.env.MONGODB_URI || "mongodb://localhost:27017/pos_system",
   jwt: {

@@ -9,6 +9,7 @@ interface ProductFilters {
   lowStock?: boolean;
   minPrice?: number;
   maxPrice?: number;
+  displayOnMenu?: boolean;
   page?: number;
   limit?: number;
 }
@@ -22,6 +23,7 @@ class ProductService {
     pricing: { usd: number; lbp: number };
     inventory: { quantity: number; minStockLevel?: number };
     image?: string;
+    displayOnMenu?: boolean;
   }): Promise<IProduct> {
     // Check if category exists
     const categoryExists = await Category.findById(data.category);
@@ -40,6 +42,7 @@ class ProductService {
     const product = await Product.create({
       ...data,
       sku: data.sku.toUpperCase(),
+      displayOnMenu: data.displayOnMenu || false,
     });
 
     return await product.populate("category");
@@ -57,6 +60,7 @@ class ProductService {
       lowStock,
       minPrice,
       maxPrice,
+      displayOnMenu,
       page = 1,
       limit = 20,
     } = filters;
@@ -76,6 +80,11 @@ class ProductService {
     // Low stock filter
     if (lowStock) {
       query["inventory.isLowStock"] = true;
+    }
+
+    // Display on menu filter
+    if (displayOnMenu !== undefined) {
+      query.displayOnMenu = displayOnMenu;
     }
 
     // Price range filter (using USD)
@@ -124,6 +133,15 @@ class ProductService {
     return product;
   }
 
+  async getMenuProducts(): Promise<IProduct[]> {
+    return await Product.find({
+      isActive: true,
+      displayOnMenu: true,
+    })
+      .populate("category")
+      .sort({ category: 1, name: 1 });
+  }
+
   async updateProduct(
     id: string,
     updates: {
@@ -133,6 +151,7 @@ class ProductService {
       pricing?: { usd: number; lbp: number };
       inventory?: { quantity: number; minStockLevel?: number };
       image?: string;
+      displayOnMenu?: boolean;
     }
   ): Promise<IProduct> {
     // If category is being updated, check if it exists

@@ -24,6 +24,8 @@ router.post(
 
 router.get("/", authenticate, asyncHandler(productController.getAllProducts));
 
+router.get("/menu", asyncHandler(productController.getMenuProducts));
+
 router.get(
   "/low-stock",
   authenticate,

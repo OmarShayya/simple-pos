@@ -3,6 +3,7 @@ import {
   IsOptional,
   IsString,
   IsNumber,
+  IsBoolean,
   Min,
   MaxLength,
   MinLength,
@@ -71,6 +72,10 @@ export class CreateProductDto {
   @IsOptional()
   @IsUrl()
   image?: string;
+
+  @IsOptional()
+  @IsBoolean()
+  displayOnMenu?: boolean;
 }
 
 export class UpdateProductDto {
@@ -102,6 +107,10 @@ export class UpdateProductDto {
   @IsOptional()
   @IsUrl()
   image?: string;
+
+  @IsOptional()
+  @IsBoolean()
+  displayOnMenu?: boolean;
 }
 
 export class UpdateStockDto {

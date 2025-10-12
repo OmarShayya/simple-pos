@@ -25,4 +25,5 @@ router.use("/sales", saleRoutes);
 router.use("/dashboard", dashboardRoutes);
 router.use("/exchange-rate", exchangeRateRoutes);  
 
+
 export default router;

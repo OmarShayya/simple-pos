@@ -16,6 +16,7 @@ export interface IProduct extends Document {
     isLowStock: boolean;
   };
   image?: string;
+  displayOnMenu: boolean;
   isActive: boolean;
   createdAt: Date;
   updatedAt: Date;
@@ -80,6 +81,10 @@ const productSchema = new Schema<IProduct>(
       type: String,
       trim: true,
     },
+    displayOnMenu: {
+      type: Boolean,
+      default: false,
+    },
     isActive: {
       type: Boolean,
       default: true,
@@ -90,11 +95,11 @@ const productSchema = new Schema<IProduct>(
   }
 );
 
-// Indexes for faster queries
 productSchema.index({ name: "text", description: "text", sku: "text" });
 productSchema.index({ category: 1 });
 productSchema.index({ "inventory.isLowStock": 1 });
 productSchema.index({ sku: 1 });
+productSchema.index({ displayOnMenu: 1 });
 
 // Update low stock status before saving
 productSchema.pre("save", function (next) {

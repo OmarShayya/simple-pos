@@ -27,6 +27,7 @@ class ProductController {
         pricing: product.pricing,
         inventory: product.inventory,
         image: product.image,
+        displayOnMenu: product.displayOnMenu,
         createdAt: product.createdAt,
       },
       "Product created successfully"
@@ -38,6 +39,12 @@ class ProductController {
       category: req.query.category as string,
       search: req.query.search as string,
       lowStock: req.query.lowStock === "true",
+      displayOnMenu:
+        req.query.displayOnMenu === "true"
+          ? true
+          : req.query.displayOnMenu === "false"
+          ? false
+          : undefined,
       minPrice: req.query.minPrice ? Number(req.query.minPrice) : undefined,
       maxPrice: req.query.maxPrice ? Number(req.query.maxPrice) : undefined,
       page: req.query.page ? Number(req.query.page) : 1,
@@ -60,12 +67,34 @@ class ProductController {
         pricing: product.pricing,
         inventory: product.inventory,
         image: product.image,
+        displayOnMenu: product.displayOnMenu,
         createdAt: product.createdAt,
       })),
       result.page,
       filters.limit,
       result.total,
       "Products retrieved successfully"
+    );
+  }
+
+  async getMenuProducts(req: CustomRequest, res: Response, next: NextFunction) {
+    const products = await productService.getMenuProducts();
+
+    return ApiResponseUtil.success(
+      res,
+      products.map((product) => ({
+        id: product._id.toString(),
+        name: product.name,
+        description: product.description,
+        sku: product.sku,
+        category: {
+          id: product.category._id.toString(),
+          name: (product.category as any).name,
+        },
+        pricing: product.pricing,
+        image: product.image,
+      })),
+      "Menu products retrieved successfully"
     );
   }
 
@@ -87,6 +116,7 @@ class ProductController {
         pricing: product.pricing,
         inventory: product.inventory,
         image: product.image,
+        displayOnMenu: product.displayOnMenu,
         createdAt: product.createdAt,
         updatedAt: product.updatedAt,
       },
@@ -112,6 +142,7 @@ class ProductController {
         pricing: product.pricing,
         inventory: product.inventory,
         image: product.image,
+        displayOnMenu: product.displayOnMenu,
       },
       "Product retrieved successfully"
     );
@@ -136,6 +167,7 @@ class ProductController {
         pricing: product.pricing,
         inventory: product.inventory,
         image: product.image,
+        displayOnMenu: product.displayOnMenu,
         updatedAt: product.updatedAt,
       },
       "Product updated successfully"
