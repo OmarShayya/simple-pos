@@ -2,7 +2,7 @@ import { Response, NextFunction } from "express";
 import { CustomRequest } from "../types";
 import saleService from "../services/sale.service";
 import { ApiResponseUtil } from "../utils/apiResponse";
-import { CreateSaleDto, PaySaleDto } from "../dtos/sale.dto";
+import { CreateSaleDto, PaySaleDto, UpdateSaleDto } from "../dtos/sale.dto";
 import { SaleStatus } from "../models/sale.model";
 
 class SaleController {
@@ -25,6 +25,14 @@ class SaleController {
             }
           : null,
         items: sale.items.map((item) => ({
+          product:
+            typeof item.product === "object"
+              ? (item.product as any)._id.toString()
+              : item.product.toString(),
+          productId:
+            typeof item.product === "object"
+              ? (item.product as any)._id.toString()
+              : item.product.toString(),
           productName: item.productName,
           productSku: item.productSku,
           quantity: item.quantity,
@@ -77,6 +85,14 @@ class SaleController {
             }
           : null,
         items: sale.items.map((item) => ({
+          product:
+            typeof item.product === "object"
+              ? (item.product as any)._id.toString()
+              : item.product.toString(),
+          productId:
+            typeof item.product === "object"
+              ? (item.product as any)._id.toString()
+              : item.product.toString(),
           productName: item.productName,
           productSku: item.productSku,
           quantity: item.quantity,
@@ -121,6 +137,14 @@ class SaleController {
             }
           : null,
         items: sale.items.map((item) => ({
+          product:
+            typeof item.product === "object"
+              ? (item.product as any)._id.toString()
+              : item.product.toString(),
+          productId:
+            typeof item.product === "object"
+              ? (item.product as any)._id.toString()
+              : item.product.toString(),
           productName: item.productName,
           productSku: item.productSku,
           quantity: item.quantity,
@@ -137,17 +161,54 @@ class SaleController {
     );
   }
 
+  async updateSale(req: CustomRequest, res: Response, next: NextFunction) {
+    const { id } = req.params;
+    const data: UpdateSaleDto = req.body;
+
+    const sale = await saleService.updateSale(id, data);
+
+    return ApiResponseUtil.success(
+      res,
+      {
+        id: sale._id.toString(),
+        invoiceNumber: sale.invoiceNumber,
+        customer: sale.customer
+          ? {
+              id: (sale.customer as any)._id.toString(),
+              name: (sale.customer as any).name,
+              phone: (sale.customer as any).phone,
+            }
+          : null,
+        items: sale.items.map((item) => ({
+          product:
+            typeof item.product === "object"
+              ? (item.product as any)._id.toString()
+              : item.product.toString(),
+          productId:
+            typeof item.product === "object"
+              ? (item.product as any)._id.toString()
+              : item.product.toString(),
+          productName: item.productName,
+          productSku: item.productSku,
+          quantity: item.quantity,
+          unitPrice: item.unitPrice,
+          subtotal: item.subtotal,
+        })),
+        totals: sale.totals,
+        status: sale.status,
+        createdAt: sale.createdAt,
+      },
+      "Sale updated successfully"
+    );
+  }
+
   async getAllSales(req: CustomRequest, res: Response, next: NextFunction) {
     const filters = {
       status: req.query.status as SaleStatus,
       customerId: req.query.customerId as string,
       cashierId: req.query.cashierId as string,
-      startDate: req.query.startDate
-        ? new Date(req.query.startDate as string)
-        : undefined,
-      endDate: req.query.endDate
-        ? new Date(req.query.endDate as string)
-        : undefined,
+      startDate: req.query.startDate as string | undefined,
+      endDate: req.query.endDate as string | undefined,
       page: req.query.page ? Number(req.query.page) : 1,
       limit: req.query.limit ? Number(req.query.limit) : 20,
     };
@@ -166,6 +227,8 @@ class SaleController {
             }
           : null,
         totals: sale.totals,
+        paymentMethod: sale.paymentMethod,
+        paymentCurrency: sale.paymentCurrency,
         status: sale.status,
         cashier: (sale.cashier as any).name,
         createdAt: sale.createdAt,

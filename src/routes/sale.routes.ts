@@ -3,7 +3,7 @@ import saleController from "../controllers/sale.controller";
 import { validateDto } from "../middlewares/validation";
 import { asyncHandler } from "../middlewares/asyncHandler";
 import { authenticate, authorize } from "../middlewares/auth.middleware";
-import { CreateSaleDto, PaySaleDto } from "../dtos/sale.dto";
+import { CreateSaleDto, PaySaleDto, UpdateSaleDto } from "../dtos/sale.dto";
 import { UserRole } from "../models/user.model";
 
 const router = Router();
@@ -13,6 +13,13 @@ router.post(
   authenticate,
   validateDto(CreateSaleDto),
   asyncHandler(saleController.createSale)
+);
+
+router.patch(
+  "/:id",
+  authenticate,
+  validateDto(UpdateSaleDto),
+  asyncHandler(saleController.updateSale)
 );
 
 router.post(

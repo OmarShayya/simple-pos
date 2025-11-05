@@ -43,6 +43,22 @@ export class CreateSaleDto {
   notes?: string;
 }
 
+export class UpdateSaleDto {
+  @IsOptional()
+  @IsMongoId()
+  customerId?: string;
+
+  @IsOptional()
+  @IsArray()
+  @ValidateNested({ each: true })
+  @Type(() => SaleItemDto)
+  items?: SaleItemDto[];
+
+  @IsOptional()
+  @IsString()
+  notes?: string;
+}
+
 export class PaySaleDto {
   @IsNotEmpty()
   @IsEnum(PaymentMethod)

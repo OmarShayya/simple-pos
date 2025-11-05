@@ -6,6 +6,7 @@ import customerRoutes from "./customer.routes";
 import saleRoutes from "./sale.routes";
 import dashboardRoutes from "./dashboard.routes";
 import exchangeRateRoutes from "./exchangeRate.routes";
+import reportRoutes from "./report.routes";
 
 const router = Router();
 
@@ -23,7 +24,7 @@ router.use("/products", productRoutes);
 router.use("/customers", customerRoutes);
 router.use("/sales", saleRoutes);
 router.use("/dashboard", dashboardRoutes);
-router.use("/exchange-rate", exchangeRateRoutes);  
-
+router.use("/exchange-rate", exchangeRateRoutes);
+router.use("/reports", reportRoutes);
 
 export default router;

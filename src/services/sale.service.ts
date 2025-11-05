@@ -15,8 +15,8 @@ interface SaleFilters {
   status?: SaleStatus;
   customerId?: string;
   cashierId?: string;
-  startDate?: Date;
-  endDate?: Date;
+  startDate?: string;
+  endDate?: string;
   page?: number;
   limit?: number;
 }
@@ -42,6 +42,92 @@ class SaleService {
     }
 
     return `${year}${month}${day}-${String(sequence).padStart(4, "0")}`;
+  }
+
+  async updateSale(
+    saleId: string,
+    data: {
+      customerId?: string;
+      items?: Array<{ productId: string; quantity: number }>;
+      notes?: string;
+    }
+  ): Promise<ISale> {
+    const sale = await Sale.findById(saleId);
+    if (!sale) {
+      throw ApiError.notFound("Sale not found");
+    }
+
+    if (sale.status !== SaleStatus.PENDING) {
+      throw ApiError.badRequest("Can only update pending sales");
+    }
+
+    if (data.items && data.items.length > 0) {
+      for (const oldItem of sale.items) {
+        await productService.updateStock(
+          oldItem.product.toString(),
+          oldItem.quantity
+        );
+      }
+
+      if (data.customerId !== undefined) {
+        if (data.customerId) {
+          await customerService.getCustomerById(data.customerId);
+        }
+        sale.customer = data.customerId ? (data.customerId as any) : undefined;
+      }
+
+      const saleItems = await Promise.all(
+        data.items.map(async (item) => {
+          const product = await productService.getProductById(item.productId);
+
+          if (product.inventory.quantity < item.quantity) {
+            throw ApiError.badRequest(
+              `Insufficient stock for ${product.name}. Available: ${product.inventory.quantity}`
+            );
+          }
+
+          const subtotal = {
+            usd: product.pricing.usd * item.quantity,
+            lbp: product.pricing.lbp * item.quantity,
+          };
+
+          return {
+            product: product._id,
+            productId: product._id.toString(),
+            productName: product.name,
+            productSku: product.sku,
+            quantity: item.quantity,
+            unitPrice: {
+              usd: product.pricing.usd,
+              lbp: product.pricing.lbp,
+            },
+            subtotal,
+          };
+        })
+      );
+
+      const totals = saleItems.reduce(
+        (acc, item) => ({
+          usd: acc.usd + item.subtotal.usd,
+          lbp: acc.lbp + item.subtotal.lbp,
+        }),
+        { usd: 0, lbp: 0 }
+      );
+
+      sale.items = saleItems;
+      sale.totals = totals;
+
+      for (const item of data.items) {
+        await productService.updateStock(item.productId, -item.quantity);
+      }
+    }
+
+    if (data.notes !== undefined) {
+      sale.notes = data.notes;
+    }
+
+    await sale.save();
+    return await sale.populate(["customer", "cashier"]);
   }
 
   async createSale(
@@ -73,6 +159,7 @@ class SaleService {
 
         return {
           product: product._id,
+          productId: product._id.toString(), // Add this line
           productName: product.name,
           productSku: product.sku,
           quantity: item.quantity,
@@ -226,8 +313,18 @@ class SaleService {
 
     if (startDate || endDate) {
       query.createdAt = {};
-      if (startDate) query.createdAt.$gte = startDate;
-      if (endDate) query.createdAt.$lte = endDate;
+
+      if (startDate) {
+        const start = new Date(startDate);
+        start.setHours(0, 0, 0, 0);
+        query.createdAt.$gte = start;
+      }
+
+      if (endDate) {
+        const end = new Date(endDate);
+        end.setHours(23, 59, 59, 999);
+        query.createdAt.$lte = end;
+      }
     }
 
     const skip = (page - 1) * limit;

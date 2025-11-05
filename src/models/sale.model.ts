@@ -18,7 +18,7 @@ export enum Currency {
 }
 
 export interface ISaleItem {
-  product: Types.ObjectId;
+  product: Types.ObjectId | any;
   productName: string;
   productSku: string;
   quantity: number;
@@ -35,7 +35,7 @@ export interface ISaleItem {
 export interface ISale extends Document {
   _id: Types.ObjectId;
   invoiceNumber: string;
-  customer?: Types.ObjectId;
+  customer?: Types.ObjectId | any; // Can be ObjectId or populated Customer
   items: ISaleItem[];
   totals: {
     usd: number;
@@ -48,7 +48,7 @@ export interface ISale extends Document {
     lbp: number;
   };
   status: SaleStatus;
-  cashier: Types.ObjectId;
+  cashier: Types.ObjectId | any; // Can be ObjectId or populated User
   notes?: string;
   paidAt?: Date;
   createdAt: Date;
