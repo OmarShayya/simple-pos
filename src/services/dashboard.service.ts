@@ -1,7 +1,10 @@
 import Sale, { SaleStatus } from "../models/sale.model";
 import Product from "../models/product.model";
 import Customer from "../models/customer.model";
-import User from "../models/user.model";
+import GamingSession, {
+  SessionStatus,
+  SessionPaymentStatus,
+} from "../models/gamingsession.model";
 
 interface DailySales {
   date: string;
@@ -28,19 +31,26 @@ class DashboardService {
     paidSales: number;
     itemsSold: number;
     newCustomers: number;
+    gamingRevenue: { usd: number; lbp: number };
+    gamingSessions: number;
   }> {
     const today = new Date();
     today.setHours(0, 0, 0, 0);
     const tomorrow = new Date(today);
     tomorrow.setDate(tomorrow.getDate() + 1);
 
-    const [sales, newCustomers] = await Promise.all([
+    const [sales, newCustomers, gamingSessions] = await Promise.all([
       Sale.find({
         createdAt: { $gte: today, $lt: tomorrow },
         status: { $ne: SaleStatus.CANCELLED },
       }),
       Customer.countDocuments({
         createdAt: { $gte: today, $lt: tomorrow },
+      }),
+      GamingSession.find({
+        startTime: { $gte: today, $lt: tomorrow },
+        status: SessionStatus.COMPLETED,
+        paymentStatus: SessionPaymentStatus.PAID,
       }),
     ]);
 
@@ -61,6 +71,14 @@ class DashboardService {
       0
     );
 
+    const gamingRevenue = gamingSessions.reduce(
+      (acc, session) => ({
+        usd: acc.usd + (session.totalCost?.usd || 0),
+        lbp: acc.lbp + (session.totalCost?.lbp || 0),
+      }),
+      { usd: 0, lbp: 0 }
+    );
+
     return {
       revenue,
       totalSales: sales.length,
@@ -68,6 +86,8 @@ class DashboardService {
       paidSales: paidSales.length,
       itemsSold,
       newCustomers,
+      gamingRevenue,
+      gamingSessions: gamingSessions.length,
     };
   }
 
@@ -442,6 +462,55 @@ class DashboardService {
       customerStats,
       pendingSales,
       inventoryValue,
+    };
+  }
+
+  async getGamingStats(): Promise<{
+    todayRevenue: { usd: number; lbp: number };
+    activeSessions: number;
+    completedToday: number;
+    unpaidSessions: number;
+  }> {
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const tomorrow = new Date(today);
+    tomorrow.setDate(tomorrow.getDate() + 1);
+
+    const sessions = await GamingSession.find({
+      startTime: { $gte: today, $lt: tomorrow },
+    });
+
+    const paidSessions = sessions.filter(
+      (s) => s.paymentStatus === SessionPaymentStatus.PAID
+    );
+
+    const todayRevenue = paidSessions.reduce(
+      (acc, session) => ({
+        usd: acc.usd + (session.totalCost?.usd || 0),
+        lbp: acc.lbp + (session.totalCost?.lbp || 0),
+      }),
+      { usd: 0, lbp: 0 }
+    );
+
+    const activeSessions = sessions.filter(
+      (s) => s.status === SessionStatus.ACTIVE
+    ).length;
+
+    const completedToday = sessions.filter(
+      (s) => s.status === SessionStatus.COMPLETED
+    ).length;
+
+    const unpaidSessions = sessions.filter(
+      (s) =>
+        s.status === SessionStatus.COMPLETED &&
+        s.paymentStatus === SessionPaymentStatus.UNPAID
+    ).length;
+
+    return {
+      todayRevenue,
+      activeSessions,
+      completedToday,
+      unpaidSessions,
     };
   }
 }

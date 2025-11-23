@@ -87,4 +87,9 @@ router.get(
   asyncHandler(dashboardController.getInventoryValue)
 );
 
+router.get(
+  "/gaming-stats",
+  authenticate,
+  asyncHandler(dashboardController.getGamingStats)
+);
 export default router;

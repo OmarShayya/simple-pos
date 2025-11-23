@@ -1,6 +1,4 @@
 import Sale, { SaleStatus, Currency } from "../models/sale.model";
-import Product from "../models/product.model";
-import Category from "../models/category.model";
 import {
   startOfWeek,
   endOfWeek,
@@ -9,6 +7,10 @@ import {
   startOfYear,
   endOfYear,
 } from "date-fns";
+import GamingSession, {
+  SessionStatus,
+  SessionPaymentStatus,
+} from "../models/gamingsession.model";
 
 interface RevenueBreakdown {
   total: {
@@ -558,6 +560,204 @@ class ReportService {
     });
 
     return [headers, ...rows].join("\n");
+  }
+
+  async getDailyGamingReport(date: Date) {
+    const dayStart = new Date(date);
+    dayStart.setHours(0, 0, 0, 0);
+    const dayEnd = new Date(date);
+    dayEnd.setHours(23, 59, 59, 999);
+
+    const revenue = await this.getGamingRevenue(dayStart, dayEnd);
+
+    const hourlyBreakdown = await GamingSession.aggregate([
+      {
+        $match: {
+          startTime: { $gte: dayStart, $lte: dayEnd },
+          status: SessionStatus.COMPLETED,
+          paymentStatus: SessionPaymentStatus.PAID,
+        },
+      },
+      {
+        $group: {
+          _id: {
+            $hour: "$startTime",
+          },
+          totalSessions: { $sum: 1 },
+          totalUsd: { $sum: "$totalCost.usd" },
+          totalLbp: { $sum: "$totalCost.lbp" },
+          totalDuration: { $sum: "$duration" },
+        },
+      },
+      {
+        $sort: { _id: 1 },
+      },
+    ]);
+
+    return {
+      period: {
+        type: "daily",
+        date: dayStart,
+      },
+      revenue,
+      hourlyBreakdown: hourlyBreakdown.map((hour) => ({
+        hour: hour._id,
+        totalSessions: hour.totalSessions,
+        revenue: { usd: hour.totalUsd, lbp: hour.totalLbp },
+        totalDuration: hour.totalDuration,
+      })),
+    };
+  }
+
+  async getMonthlyGamingReport(month: number, year: number) {
+    const startDate = new Date(year, month - 1, 1);
+    startDate.setHours(0, 0, 0, 0);
+    const endDate = new Date(year, month, 0);
+    endDate.setHours(23, 59, 59, 999);
+
+    const revenue = await this.getGamingRevenue(startDate, endDate);
+
+    const dailyBreakdown = await GamingSession.aggregate([
+      {
+        $match: {
+          startTime: { $gte: startDate, $lte: endDate },
+          status: SessionStatus.COMPLETED,
+          paymentStatus: SessionPaymentStatus.PAID,
+        },
+      },
+      {
+        $group: {
+          _id: {
+            $dateToString: { format: "%Y-%m-%d", date: "$startTime" },
+          },
+          totalSessions: { $sum: 1 },
+          totalUsd: { $sum: "$totalCost.usd" },
+          totalLbp: { $sum: "$totalCost.lbp" },
+          totalDuration: { $sum: "$duration" },
+        },
+      },
+      {
+        $sort: { _id: 1 },
+      },
+    ]);
+
+    return {
+      period: {
+        type: "monthly",
+        month,
+        year,
+        startDate,
+        endDate,
+      },
+      revenue,
+      dailyBreakdown: dailyBreakdown.map((day) => ({
+        date: day._id,
+        totalSessions: day.totalSessions,
+        revenue: { usd: day.totalUsd, lbp: day.totalLbp },
+        totalDuration: day.totalDuration,
+      })),
+    };
+  }
+
+  async getGamingRevenue(
+    startDate: Date,
+    endDate: Date
+  ): Promise<{
+    totalRevenue: { usd: number; lbp: number };
+    totalSessions: number;
+    averageSessionDuration: number;
+    averageRevenue: { usd: number; lbp: number };
+  }> {
+    const sessions = await GamingSession.find({
+      startTime: { $gte: startDate, $lte: endDate },
+      status: SessionStatus.COMPLETED,
+      paymentStatus: SessionPaymentStatus.PAID,
+    });
+
+    const totalRevenue = sessions.reduce(
+      (acc, session) => ({
+        usd: acc.usd + (session.totalCost?.usd || 0),
+        lbp: acc.lbp + (session.totalCost?.lbp || 0),
+      }),
+      { usd: 0, lbp: 0 }
+    );
+
+    const totalSessions = sessions.length;
+    const averageSessionDuration =
+      totalSessions > 0
+        ? sessions.reduce((acc, s) => acc + (s.duration || 0), 0) /
+          totalSessions
+        : 0;
+
+    return {
+      totalRevenue,
+      totalSessions,
+      averageSessionDuration,
+      averageRevenue: {
+        usd: totalSessions > 0 ? totalRevenue.usd / totalSessions : 0,
+        lbp: totalSessions > 0 ? totalRevenue.lbp / totalSessions : 0,
+      },
+    };
+  }
+
+  async getGamingRevenueByPC(
+    startDate?: Date,
+    endDate?: Date
+  ): Promise<
+    Array<{
+      pcId: string;
+      pcNumber: string;
+      pcName: string;
+      totalSessions: number;
+      totalRevenue: { usd: number; lbp: number };
+      averageDuration: number;
+    }>
+  > {
+    const matchQuery: any = {
+      status: SessionStatus.COMPLETED,
+      paymentStatus: SessionPaymentStatus.PAID,
+    };
+
+    if (startDate && endDate) {
+      matchQuery.startTime = { $gte: startDate, $lte: endDate };
+    }
+
+    const results = await GamingSession.aggregate([
+      { $match: matchQuery },
+      {
+        $lookup: {
+          from: "pcs",
+          localField: "pc",
+          foreignField: "_id",
+          as: "pcInfo",
+        },
+      },
+      { $unwind: "$pcInfo" },
+      {
+        $group: {
+          _id: "$pc",
+          pcNumber: { $first: "$pcInfo.pcNumber" },
+          pcName: { $first: "$pcInfo.name" },
+          totalSessions: { $sum: 1 },
+          totalRevenueUsd: { $sum: "$totalCost.usd" },
+          totalRevenueLbp: { $sum: "$totalCost.lbp" },
+          averageDuration: { $avg: "$duration" },
+        },
+      },
+      { $sort: { totalRevenueUsd: -1 } },
+    ]);
+
+    return results.map((pc) => ({
+      pcId: pc._id.toString(),
+      pcNumber: pc.pcNumber,
+      pcName: pc.pcName,
+      totalSessions: pc.totalSessions,
+      totalRevenue: {
+        usd: pc.totalRevenueUsd || 0,
+        lbp: pc.totalRevenueLbp || 0,
+      },
+      averageDuration: Math.round(pc.averageDuration || 0),
+    }));
   }
 }
 

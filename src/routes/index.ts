@@ -7,6 +7,7 @@ import saleRoutes from "./sale.routes";
 import dashboardRoutes from "./dashboard.routes";
 import exchangeRateRoutes from "./exchangeRate.routes";
 import reportRoutes from "./report.routes";
+import gamingRoutes from "./gaming.routes";
 
 const router = Router();
 
@@ -26,5 +27,6 @@ router.use("/sales", saleRoutes);
 router.use("/dashboard", dashboardRoutes);
 router.use("/exchange-rate", exchangeRateRoutes);
 router.use("/reports", reportRoutes);
+router.use("/gaming", gamingRoutes);
 
 export default router;

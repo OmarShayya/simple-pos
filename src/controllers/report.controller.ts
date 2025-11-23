@@ -181,6 +181,89 @@ class ReportController {
     );
     return res.send(csv);
   }
+
+  async getGamingRevenue(
+    req: CustomRequest,
+    res: Response,
+    next: NextFunction
+  ) {
+    const { startDate, endDate } = req.query;
+
+    const start = startDate ? new Date(startDate as string) : new Date();
+    const end = endDate ? new Date(endDate as string) : new Date();
+
+    start.setHours(0, 0, 0, 0);
+    end.setHours(23, 59, 59, 999);
+
+    const revenue = await reportService.getGamingRevenue(start, end);
+
+    return ApiResponseUtil.success(
+      res,
+      revenue,
+      "Gaming revenue retrieved successfully"
+    );
+  }
+
+  async getGamingRevenueByPC(
+    req: CustomRequest,
+    res: Response,
+    next: NextFunction
+  ) {
+    const { startDate, endDate } = req.query;
+
+    const start = startDate ? new Date(startDate as string) : undefined;
+    const end = endDate ? new Date(endDate as string) : undefined;
+
+    if (start) start.setHours(0, 0, 0, 0);
+    if (end) end.setHours(23, 59, 59, 999);
+
+    const revenue = await reportService.getGamingRevenueByPC(start, end);
+
+    return ApiResponseUtil.success(
+      res,
+      revenue,
+      "Gaming revenue by PC retrieved successfully"
+    );
+  }
+
+  async getDailyGamingReport(
+    req: CustomRequest,
+    res: Response,
+    next: NextFunction
+  ) {
+    const date = req.query.date
+      ? new Date(req.query.date as string)
+      : new Date();
+
+    const report = await reportService.getDailyGamingReport(date);
+
+    return ApiResponseUtil.success(
+      res,
+      report,
+      "Daily gaming report retrieved successfully"
+    );
+  }
+
+  async getMonthlyGamingReport(
+    req: CustomRequest,
+    res: Response,
+    next: NextFunction
+  ) {
+    const month = req.query.month
+      ? Number(req.query.month)
+      : new Date().getMonth() + 1;
+    const year = req.query.year
+      ? Number(req.query.year)
+      : new Date().getFullYear();
+
+    const report = await reportService.getMonthlyGamingReport(month, year);
+
+    return ApiResponseUtil.success(
+      res,
+      report,
+      "Monthly gaming report retrieved successfully"
+    );
+  }
 }
 
 export default new ReportController();

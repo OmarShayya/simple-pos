@@ -179,6 +179,16 @@ class DashboardController {
       "Overall dashboard stats retrieved successfully"
     );
   }
+
+  async getGamingStats(req: CustomRequest, res: Response, next: NextFunction) {
+    const stats = await dashboardService.getGamingStats();
+
+    return ApiResponseUtil.success(
+      res,
+      stats,
+      "Gaming stats retrieved successfully"
+    );
+  }
 }
 
 export default new DashboardController();
