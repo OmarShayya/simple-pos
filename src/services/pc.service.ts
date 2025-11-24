@@ -5,6 +5,7 @@ import GamingSession, {
 } from "../models/gamingsession.model";
 import { ApiError } from "../utils/apiError";
 import config from "../config/config";
+import socketService from "./socket.service";
 
 interface PCFilters {
   status?: PCStatus;
@@ -221,8 +222,8 @@ class PCService {
     pc.status = PCStatus.OCCUPIED;
     await pc.save();
 
-    // TODO: Emit socket event to desktop app
-    // socketService.emit('pc:lock', { pcId, pcNumber: pc.pcNumber });
+    // Emit socket event to lock the PC on desktop app
+    socketService.lockPC(pc.pcNumber);
 
     return pc;
   }
@@ -263,8 +264,8 @@ class PCService {
     pc.status = PCStatus.AVAILABLE;
     await pc.save();
 
-    // TODO: Emit socket event to desktop app
-    // socketService.emit('pc:unlock', { pcId, pcNumber: pc.pcNumber });
+    // Emit socket event to unlock the PC on desktop app
+    socketService.unlockPC(pc.pcNumber);
 
     return pc;
   }
