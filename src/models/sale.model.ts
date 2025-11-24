@@ -26,7 +26,20 @@ export interface ISaleItem {
     usd: number;
     lbp: number;
   };
+  discount?: {
+    discountId: Types.ObjectId;
+    discountName: string;
+    percentage: number;
+    amount: {
+      usd: number;
+      lbp: number;
+    };
+  };
   subtotal: {
+    usd: number;
+    lbp: number;
+  };
+  finalAmount: {
     usd: number;
     lbp: number;
   };
@@ -37,6 +50,23 @@ export interface ISale extends Document {
   invoiceNumber: string;
   customer?: Types.ObjectId | any; // Can be ObjectId or populated Customer
   items: ISaleItem[];
+  subtotalBeforeDiscount: {
+    usd: number;
+    lbp: number;
+  };
+  saleDiscount?: {
+    discountId: Types.ObjectId;
+    discountName: string;
+    percentage: number;
+    amount: {
+      usd: number;
+      lbp: number;
+    };
+  };
+  totalItemDiscounts: {
+    usd: number;
+    lbp: number;
+  };
   totals: {
     usd: number;
     lbp: number;
@@ -79,7 +109,20 @@ const saleItemSchema = new Schema<ISaleItem>(
       usd: { type: Number, required: true },
       lbp: { type: Number, required: true },
     },
+    discount: {
+      discountId: { type: Schema.Types.ObjectId, ref: "Discount" },
+      discountName: { type: String },
+      percentage: { type: Number, min: 0, max: 100 },
+      amount: {
+        usd: { type: Number, default: 0 },
+        lbp: { type: Number, default: 0 },
+      },
+    },
     subtotal: {
+      usd: { type: Number, required: true },
+      lbp: { type: Number, required: true },
+    },
+    finalAmount: {
       usd: { type: Number, required: true },
       lbp: { type: Number, required: true },
     },
@@ -105,6 +148,23 @@ const saleSchema = new Schema<ISale>(
         validator: (items: ISaleItem[]) => items.length > 0,
         message: "Sale must have at least one item",
       },
+    },
+    subtotalBeforeDiscount: {
+      usd: { type: Number, required: true, min: 0 },
+      lbp: { type: Number, required: true, min: 0 },
+    },
+    saleDiscount: {
+      discountId: { type: Schema.Types.ObjectId, ref: "Discount" },
+      discountName: { type: String },
+      percentage: { type: Number, min: 0, max: 100 },
+      amount: {
+        usd: { type: Number, default: 0 },
+        lbp: { type: Number, default: 0 },
+      },
+    },
+    totalItemDiscounts: {
+      usd: { type: Number, default: 0, min: 0 },
+      lbp: { type: Number, default: 0, min: 0 },
     },
     totals: {
       usd: { type: Number, required: true, min: 0 },

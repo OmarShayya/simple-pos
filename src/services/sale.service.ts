@@ -8,6 +8,8 @@ import Product from "../models/product.model";
 import Customer from "../models/customer.model";
 import customerService from "./customer.service";
 import productService from "./product.service";
+import discountService from "./discount.service";
+import Discount, { DiscountTarget } from "../models/discount.model";
 import { ApiError } from "../utils/apiError";
 import config from "../config/config";
 
@@ -19,6 +21,12 @@ interface SaleFilters {
   endDate?: string;
   page?: number;
   limit?: number;
+}
+
+interface SaleItemInput {
+  productId: string;
+  quantity: number;
+  discountId?: string;
 }
 
 class SaleService {
@@ -44,11 +52,104 @@ class SaleService {
     return `${year}${month}${day}-${String(sequence).padStart(4, "0")}`;
   }
 
+  private async processSaleItems(items: SaleItemInput[]) {
+    const saleItems = await Promise.all(
+      items.map(async (item) => {
+        const product = await productService.getProductById(item.productId);
+
+        if (product.inventory.quantity < item.quantity) {
+          throw ApiError.badRequest(
+            `Insufficient stock for ${product.name}. Available: ${product.inventory.quantity}`
+          );
+        }
+
+        const subtotal = {
+          usd: product.pricing.usd * item.quantity,
+          lbp: product.pricing.lbp * item.quantity,
+        };
+
+        let discount = undefined;
+        let finalAmount = { ...subtotal };
+
+        // Apply discount if provided
+        if (item.discountId) {
+          const discountDoc = await Discount.findById(item.discountId);
+          if (!discountDoc) {
+            throw ApiError.notFound(`Discount ${item.discountId} not found`);
+          }
+
+          if (!discountDoc.isActive) {
+            throw ApiError.badRequest(
+              `Discount ${discountDoc.name} is not active`
+            );
+          }
+
+          // Validate discount target
+          if (discountDoc.target === DiscountTarget.PRODUCT) {
+            if (discountDoc.targetId?.toString() !== product._id.toString()) {
+              throw ApiError.badRequest(
+                `Discount ${discountDoc.name} is not applicable to product ${product.name}`
+              );
+            }
+          } else if (discountDoc.target === DiscountTarget.CATEGORY) {
+            if (
+              discountDoc.targetId?.toString() !==
+              product.category.toString()
+            ) {
+              throw ApiError.badRequest(
+                `Discount ${discountDoc.name} is not applicable to product ${product.name}`
+              );
+            }
+          } else {
+            throw ApiError.badRequest(
+              `Discount ${discountDoc.name} cannot be applied to individual items`
+            );
+          }
+
+          const discountAmount = discountService.calculateDiscountAmount(
+            subtotal,
+            discountDoc.value
+          );
+
+          discount = {
+            discountId: discountDoc._id,
+            discountName: discountDoc.name,
+            percentage: discountDoc.value,
+            amount: discountAmount,
+          };
+
+          finalAmount = {
+            usd: subtotal.usd - discountAmount.usd,
+            lbp: subtotal.lbp - discountAmount.lbp,
+          };
+        }
+
+        return {
+          product: product._id,
+          productId: product._id.toString(),
+          productName: product.name,
+          productSku: product.sku,
+          quantity: item.quantity,
+          unitPrice: {
+            usd: product.pricing.usd,
+            lbp: product.pricing.lbp,
+          },
+          discount,
+          subtotal,
+          finalAmount,
+        };
+      })
+    );
+
+    return saleItems;
+  }
+
   async updateSale(
     saleId: string,
     data: {
       customerId?: string;
-      items?: Array<{ productId: string; quantity: number }>;
+      items?: SaleItemInput[];
+      saleDiscountId?: string;
       notes?: string;
     }
   ): Promise<ISale> {
@@ -62,6 +163,7 @@ class SaleService {
     }
 
     if (data.items && data.items.length > 0) {
+      // Restore stock for old items
       for (const oldItem of sale.items) {
         await productService.updateStock(
           oldItem.product.toString(),
@@ -76,37 +178,11 @@ class SaleService {
         sale.customer = data.customerId ? (data.customerId as any) : undefined;
       }
 
-      const saleItems = await Promise.all(
-        data.items.map(async (item) => {
-          const product = await productService.getProductById(item.productId);
+      // Process new items with discounts
+      const saleItems = await this.processSaleItems(data.items);
 
-          if (product.inventory.quantity < item.quantity) {
-            throw ApiError.badRequest(
-              `Insufficient stock for ${product.name}. Available: ${product.inventory.quantity}`
-            );
-          }
-
-          const subtotal = {
-            usd: product.pricing.usd * item.quantity,
-            lbp: product.pricing.lbp * item.quantity,
-          };
-
-          return {
-            product: product._id,
-            productId: product._id.toString(),
-            productName: product.name,
-            productSku: product.sku,
-            quantity: item.quantity,
-            unitPrice: {
-              usd: product.pricing.usd,
-              lbp: product.pricing.lbp,
-            },
-            subtotal,
-          };
-        })
-      );
-
-      const totals = saleItems.reduce(
+      // Calculate subtotal before any discounts
+      const subtotalBeforeDiscount = saleItems.reduce(
         (acc, item) => ({
           usd: acc.usd + item.subtotal.usd,
           lbp: acc.lbp + item.subtotal.lbp,
@@ -114,9 +190,64 @@ class SaleService {
         { usd: 0, lbp: 0 }
       );
 
+      // Calculate total item-level discounts
+      const totalItemDiscounts = saleItems.reduce(
+        (acc, item) => ({
+          usd: acc.usd + (item.discount?.amount.usd || 0),
+          lbp: acc.lbp + (item.discount?.amount.lbp || 0),
+        }),
+        { usd: 0, lbp: 0 }
+      );
+
+      // Calculate total after item discounts
+      let totals = {
+        usd: subtotalBeforeDiscount.usd - totalItemDiscounts.usd,
+        lbp: subtotalBeforeDiscount.lbp - totalItemDiscounts.lbp,
+      };
+
+      // Apply sale-level discount if provided
+      let saleDiscount = undefined;
+      if (data.saleDiscountId) {
+        const discountDoc = await Discount.findById(data.saleDiscountId);
+        if (!discountDoc) {
+          throw ApiError.notFound("Sale discount not found");
+        }
+
+        if (!discountDoc.isActive) {
+          throw ApiError.badRequest(`Discount ${discountDoc.name} is not active`);
+        }
+
+        if (discountDoc.target !== DiscountTarget.SALE) {
+          throw ApiError.badRequest(
+            `Discount ${discountDoc.name} cannot be applied to entire sale`
+          );
+        }
+
+        const saleDiscountAmount = discountService.calculateDiscountAmount(
+          totals,
+          discountDoc.value
+        );
+
+        saleDiscount = {
+          discountId: discountDoc._id,
+          discountName: discountDoc.name,
+          percentage: discountDoc.value,
+          amount: saleDiscountAmount,
+        };
+
+        totals = {
+          usd: totals.usd - saleDiscountAmount.usd,
+          lbp: totals.lbp - saleDiscountAmount.lbp,
+        };
+      }
+
       sale.items = saleItems;
+      sale.subtotalBeforeDiscount = subtotalBeforeDiscount;
+      sale.totalItemDiscounts = totalItemDiscounts;
+      sale.saleDiscount = saleDiscount;
       sale.totals = totals;
 
+      // Deduct stock for new items
       for (const item of data.items) {
         await productService.updateStock(item.productId, -item.quantity);
       }
@@ -134,7 +265,8 @@ class SaleService {
     cashierId: string,
     data: {
       customerId?: string;
-      items: Array<{ productId: string; quantity: number }>;
+      items: SaleItemInput[];
+      saleDiscountId?: string;
       notes?: string;
     }
   ): Promise<ISale> {
@@ -142,37 +274,11 @@ class SaleService {
       await customerService.getCustomerById(data.customerId);
     }
 
-    const saleItems = await Promise.all(
-      data.items.map(async (item) => {
-        const product = await productService.getProductById(item.productId);
+    // Process items with discounts
+    const saleItems = await this.processSaleItems(data.items);
 
-        if (product.inventory.quantity < item.quantity) {
-          throw ApiError.badRequest(
-            `Insufficient stock for ${product.name}. Available: ${product.inventory.quantity}`
-          );
-        }
-
-        const subtotal = {
-          usd: product.pricing.usd * item.quantity,
-          lbp: product.pricing.lbp * item.quantity,
-        };
-
-        return {
-          product: product._id,
-          productId: product._id.toString(), // Add this line
-          productName: product.name,
-          productSku: product.sku,
-          quantity: item.quantity,
-          unitPrice: {
-            usd: product.pricing.usd,
-            lbp: product.pricing.lbp,
-          },
-          subtotal,
-        };
-      })
-    );
-
-    const totals = saleItems.reduce(
+    // Calculate subtotal before any discounts
+    const subtotalBeforeDiscount = saleItems.reduce(
       (acc, item) => ({
         usd: acc.usd + item.subtotal.usd,
         lbp: acc.lbp + item.subtotal.lbp,
@@ -180,18 +286,73 @@ class SaleService {
       { usd: 0, lbp: 0 }
     );
 
+    // Calculate total item-level discounts
+    const totalItemDiscounts = saleItems.reduce(
+      (acc, item) => ({
+        usd: acc.usd + (item.discount?.amount.usd || 0),
+        lbp: acc.lbp + (item.discount?.amount.lbp || 0),
+      }),
+      { usd: 0, lbp: 0 }
+    );
+
+    // Calculate total after item discounts
+    let totals = {
+      usd: subtotalBeforeDiscount.usd - totalItemDiscounts.usd,
+      lbp: subtotalBeforeDiscount.lbp - totalItemDiscounts.lbp,
+    };
+
+    // Apply sale-level discount if provided
+    let saleDiscount = undefined;
+    if (data.saleDiscountId) {
+      const discountDoc = await Discount.findById(data.saleDiscountId);
+      if (!discountDoc) {
+        throw ApiError.notFound("Sale discount not found");
+      }
+
+      if (!discountDoc.isActive) {
+        throw ApiError.badRequest(`Discount ${discountDoc.name} is not active`);
+      }
+
+      if (discountDoc.target !== DiscountTarget.SALE) {
+        throw ApiError.badRequest(
+          `Discount ${discountDoc.name} cannot be applied to entire sale`
+        );
+      }
+
+      const saleDiscountAmount = discountService.calculateDiscountAmount(
+        totals,
+        discountDoc.value
+      );
+
+      saleDiscount = {
+        discountId: discountDoc._id,
+        discountName: discountDoc.name,
+        percentage: discountDoc.value,
+        amount: saleDiscountAmount,
+      };
+
+      totals = {
+        usd: totals.usd - saleDiscountAmount.usd,
+        lbp: totals.lbp - saleDiscountAmount.lbp,
+      };
+    }
+
     const invoiceNumber = await this.generateInvoiceNumber();
 
     const sale = await Sale.create({
       invoiceNumber,
       customer: data.customerId,
       items: saleItems,
+      subtotalBeforeDiscount,
+      totalItemDiscounts,
+      saleDiscount,
       totals,
       cashier: cashierId,
       notes: data.notes,
       status: SaleStatus.PENDING,
     });
 
+    // Deduct stock
     for (const item of data.items) {
       await productService.updateStock(item.productId, -item.quantity);
     }
@@ -374,8 +535,10 @@ class SaleService {
   async getTodaySales(): Promise<{
     totalSales: number;
     totalRevenue: { usd: number; lbp: number };
+    totalDiscounts: { usd: number; lbp: number };
     pendingSales: number;
     paidSales: number;
+    sales: ISale[];
   }> {
     const today = new Date();
     today.setHours(0, 0, 0, 0);
@@ -386,7 +549,10 @@ class SaleService {
     const sales = await Sale.find({
       createdAt: { $gte: today, $lt: tomorrow },
       status: { $ne: SaleStatus.CANCELLED },
-    });
+    })
+      .populate("customer", "name phone")
+      .populate("cashier", "name email")
+      .sort({ createdAt: -1 });
 
     const totalRevenue = sales
       .filter((sale) => sale.status === SaleStatus.PAID)
@@ -398,11 +564,27 @@ class SaleService {
         { usd: 0, lbp: 0 }
       );
 
+    const totalDiscounts = sales.reduce(
+      (acc, sale) => ({
+        usd:
+          acc.usd +
+          (sale.totalItemDiscounts?.usd || 0) +
+          (sale.saleDiscount?.amount.usd || 0),
+        lbp:
+          acc.lbp +
+          (sale.totalItemDiscounts?.lbp || 0) +
+          (sale.saleDiscount?.amount.lbp || 0),
+      }),
+      { usd: 0, lbp: 0 }
+    );
+
     return {
       totalSales: sales.length,
       totalRevenue,
+      totalDiscounts,
       pendingSales: sales.filter((s) => s.status === SaleStatus.PENDING).length,
       paidSales: sales.filter((s) => s.status === SaleStatus.PAID).length,
+      sales,
     };
   }
 }

@@ -37,8 +37,13 @@ class SaleController {
           productSku: item.productSku,
           quantity: item.quantity,
           unitPrice: item.unitPrice,
+          discount: item.discount,
           subtotal: item.subtotal,
+          finalAmount: item.finalAmount,
         })),
+        subtotalBeforeDiscount: sale.subtotalBeforeDiscount,
+        totalItemDiscounts: sale.totalItemDiscounts,
+        saleDiscount: sale.saleDiscount,
         totals: sale.totals,
         status: sale.status,
         createdAt: sale.createdAt,
@@ -97,8 +102,13 @@ class SaleController {
           productSku: item.productSku,
           quantity: item.quantity,
           unitPrice: item.unitPrice,
+          discount: item.discount,
           subtotal: item.subtotal,
+          finalAmount: item.finalAmount,
         })),
+        subtotalBeforeDiscount: sale.subtotalBeforeDiscount,
+        totalItemDiscounts: sale.totalItemDiscounts,
+        saleDiscount: sale.saleDiscount,
         totals: sale.totals,
         paymentMethod: sale.paymentMethod,
         paymentCurrency: sale.paymentCurrency,
@@ -149,8 +159,13 @@ class SaleController {
           productSku: item.productSku,
           quantity: item.quantity,
           unitPrice: item.unitPrice,
+          discount: item.discount,
           subtotal: item.subtotal,
+          finalAmount: item.finalAmount,
         })),
+        subtotalBeforeDiscount: sale.subtotalBeforeDiscount,
+        totalItemDiscounts: sale.totalItemDiscounts,
+        saleDiscount: sale.saleDiscount,
         totals: sale.totals,
         paymentMethod: sale.paymentMethod,
         status: sale.status,
@@ -192,8 +207,13 @@ class SaleController {
           productSku: item.productSku,
           quantity: item.quantity,
           unitPrice: item.unitPrice,
+          discount: item.discount,
           subtotal: item.subtotal,
+          finalAmount: item.finalAmount,
         })),
+        subtotalBeforeDiscount: sale.subtotalBeforeDiscount,
+        totalItemDiscounts: sale.totalItemDiscounts,
+        saleDiscount: sale.saleDiscount,
         totals: sale.totals,
         status: sale.status,
         createdAt: sale.createdAt,
@@ -226,6 +246,9 @@ class SaleController {
               phone: (sale.customer as any).phone,
             }
           : null,
+        subtotalBeforeDiscount: sale.subtotalBeforeDiscount,
+        totalItemDiscounts: sale.totalItemDiscounts,
+        saleDiscount: sale.saleDiscount,
         totals: sale.totals,
         paymentMethod: sale.paymentMethod,
         paymentCurrency: sale.paymentCurrency,
@@ -248,11 +271,37 @@ class SaleController {
   }
 
   async getTodaySales(req: CustomRequest, res: Response, next: NextFunction) {
-    const stats = await saleService.getTodaySales();
+    const result = await saleService.getTodaySales();
 
     return ApiResponseUtil.success(
       res,
-      stats,
+      {
+        totalSales: result.totalSales,
+        totalRevenue: result.totalRevenue,
+        totalDiscounts: result.totalDiscounts,
+        pendingSales: result.pendingSales,
+        paidSales: result.paidSales,
+        sales: result.sales.map((sale) => ({
+          id: sale._id.toString(),
+          invoiceNumber: sale.invoiceNumber,
+          customer: sale.customer
+            ? {
+                name: (sale.customer as any).name,
+                phone: (sale.customer as any).phone,
+              }
+            : null,
+          subtotalBeforeDiscount: sale.subtotalBeforeDiscount,
+          totalItemDiscounts: sale.totalItemDiscounts,
+          saleDiscount: sale.saleDiscount,
+          totals: sale.totals,
+          paymentMethod: sale.paymentMethod,
+          paymentCurrency: sale.paymentCurrency,
+          status: sale.status,
+          cashier: (sale.cashier as any).name,
+          paidAt: sale.paidAt,
+          createdAt: sale.createdAt,
+        })),
+      },
       "Today sales stats retrieved successfully"
     );
   }

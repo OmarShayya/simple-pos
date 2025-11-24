@@ -10,6 +10,8 @@ import Sale, {
   Currency,
 } from "../models/sale.model";
 import customerService from "./customer.service";
+import discountService from "./discount.service";
+import Discount, { DiscountTarget } from "../models/discount.model";
 import { ApiError } from "../utils/apiError";
 
 interface SessionFilters {
@@ -112,7 +114,8 @@ class GamingSessionService {
 
   async endSession(
     sessionId: string,
-    cashierId: string
+    cashierId: string,
+    discountId?: string
   ): Promise<IGamingSession> {
     const session = await GamingSession.findById(sessionId).populate("pc");
 
@@ -139,6 +142,45 @@ class GamingSessionService {
       usd: Math.round(costUsd * 100) / 100,
       lbp: Math.round(costLbp),
     };
+
+    // Apply discount if provided
+    if (discountId) {
+      const discountDoc = await Discount.findById(discountId);
+      if (!discountDoc) {
+        throw ApiError.notFound("Discount not found");
+      }
+
+      if (!discountDoc.isActive) {
+        throw ApiError.badRequest(`Discount ${discountDoc.name} is not active`);
+      }
+
+      if (discountDoc.target !== DiscountTarget.GAMING_SESSION) {
+        throw ApiError.badRequest(
+          `Discount ${discountDoc.name} cannot be applied to gaming sessions`
+        );
+      }
+
+      const discountAmount = discountService.calculateDiscountAmount(
+        session.totalCost,
+        discountDoc.value
+      );
+
+      session.discount = {
+        discountId: discountDoc._id,
+        discountName: discountDoc.name,
+        percentage: discountDoc.value,
+        amount: discountAmount,
+      };
+
+      session.finalAmount = {
+        usd: session.totalCost.usd - discountAmount.usd,
+        lbp: session.totalCost.lbp - discountAmount.lbp,
+      };
+    } else {
+      // No discount, final amount equals total cost
+      session.finalAmount = { ...session.totalCost };
+    }
+
     session.status = SessionStatus.COMPLETED;
     session.endedBy = cashierId as any;
 
@@ -189,11 +231,11 @@ class GamingSessionService {
       throw ApiError.badRequest("Session is already paid");
     }
 
-    // Verify payment amount
+    // Verify payment amount - use finalAmount which includes discounts
     const totalDue =
       paymentData.paymentCurrency === Currency.USD
-        ? session.totalCost.usd
-        : session.totalCost.lbp;
+        ? session.finalAmount.usd
+        : session.finalAmount.lbp;
 
     if (paymentData.amount < totalDue) {
       throw ApiError.badRequest("Insufficient payment amount");
@@ -210,10 +252,16 @@ class GamingSessionService {
           productSku: `GAMING-${(session.pc as any).pcNumber}`,
           quantity: 1,
           unitPrice: session.totalCost,
+          discount: session.discount,
           subtotal: session.totalCost,
+          finalAmount: session.finalAmount,
         },
       ],
-      totals: session.totalCost,
+      subtotalBeforeDiscount: session.totalCost,
+      totalItemDiscounts: session.discount
+        ? session.discount.amount
+        : { usd: 0, lbp: 0 },
+      totals: session.finalAmount,
       paymentMethod: paymentData.paymentMethod,
       paymentCurrency: paymentData.paymentCurrency,
       amountPaid:
@@ -230,7 +278,9 @@ class GamingSessionService {
       cashier: session.endedBy || session.startedBy,
       notes: `Gaming Session: ${session.sessionNumber} - Duration: ${Math.floor(
         session.duration! / 60
-      )}h ${session.duration! % 60}m`,
+      )}h ${session.duration! % 60}m${
+        session.discount ? ` - Discount Applied: ${session.discount.discountName}` : ""
+      }`,
       paidAt: new Date(),
     };
 
@@ -268,11 +318,11 @@ class GamingSessionService {
     session.paymentStatus = SessionPaymentStatus.PAID;
     await session.save();
 
-    // Update customer stats if applicable
+    // Update customer stats if applicable - use finalAmount which includes discounts
     if (session.customer) {
       await customerService.updatePurchaseStats(
         session.customer._id.toString(),
-        session.totalCost.usd
+        session.finalAmount.usd
       );
     }
 
@@ -474,8 +524,8 @@ class GamingSessionService {
 
     const totalRevenue = paidSessions.reduce(
       (acc, session) => ({
-        usd: acc.usd + (session.totalCost?.usd || 0),
-        lbp: acc.lbp + (session.totalCost?.lbp || 0),
+        usd: acc.usd + (session.finalAmount?.usd || session.totalCost?.usd || 0),
+        lbp: acc.lbp + (session.finalAmount?.lbp || session.totalCost?.lbp || 0),
       }),
       { usd: 0, lbp: 0 }
     );

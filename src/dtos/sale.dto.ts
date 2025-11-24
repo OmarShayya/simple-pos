@@ -23,6 +23,10 @@ export class SaleItemDto {
   @IsNumber()
   @Min(1)
   quantity!: number;
+
+  @IsOptional()
+  @IsMongoId()
+  discountId?: string;
 }
 
 export class CreateSaleDto {
@@ -36,6 +40,10 @@ export class CreateSaleDto {
   @ValidateNested({ each: true })
   @Type(() => SaleItemDto)
   items!: SaleItemDto[];
+
+  @IsOptional()
+  @IsMongoId()
+  saleDiscountId?: string;
 
   @IsOptional()
   @IsString()
@@ -53,6 +61,10 @@ export class UpdateSaleDto {
   @ValidateNested({ each: true })
   @Type(() => SaleItemDto)
   items?: SaleItemDto[];
+
+  @IsOptional()
+  @IsMongoId()
+  saleDiscountId?: string;
 
   @IsOptional()
   @IsString()

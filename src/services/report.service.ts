@@ -30,6 +30,24 @@ interface RevenueBreakdown {
     usd: number;
     lbp: number;
   };
+  discounts: {
+    totalItemDiscounts: {
+      usd: number;
+      lbp: number;
+    };
+    totalSaleDiscounts: {
+      usd: number;
+      lbp: number;
+    };
+    totalDiscounts: {
+      usd: number;
+      lbp: number;
+    };
+    revenueBeforeDiscounts: {
+      usd: number;
+      lbp: number;
+    };
+  };
 }
 
 class ReportService {
@@ -73,6 +91,33 @@ class ReportService {
       { usd: 0, lbp: 0 }
     );
 
+    // Calculate discount totals
+    const totalItemDiscounts = sales.reduce(
+      (acc, sale) => ({
+        usd: acc.usd + (sale.totalItemDiscounts?.usd || 0),
+        lbp: acc.lbp + (sale.totalItemDiscounts?.lbp || 0),
+      }),
+      { usd: 0, lbp: 0 }
+    );
+
+    const totalSaleDiscounts = sales.reduce(
+      (acc, sale) => ({
+        usd: acc.usd + (sale.saleDiscount?.amount.usd || 0),
+        lbp: acc.lbp + (sale.saleDiscount?.amount.lbp || 0),
+      }),
+      { usd: 0, lbp: 0 }
+    );
+
+    const totalDiscounts = {
+      usd: totalItemDiscounts.usd + totalSaleDiscounts.usd,
+      lbp: totalItemDiscounts.lbp + totalSaleDiscounts.lbp,
+    };
+
+    const revenueBeforeDiscounts = {
+      usd: totalRevenue.usd + totalDiscounts.usd,
+      lbp: totalRevenue.lbp + totalDiscounts.lbp,
+    };
+
     const totalSales = sales.length;
 
     return {
@@ -83,6 +128,12 @@ class ReportService {
       averageSale: {
         usd: totalSales > 0 ? totalRevenue.usd / totalSales : 0,
         lbp: totalSales > 0 ? totalRevenue.lbp / totalSales : 0,
+      },
+      discounts: {
+        totalItemDiscounts,
+        totalSaleDiscounts,
+        totalDiscounts,
+        revenueBeforeDiscounts,
       },
     };
   }
@@ -384,8 +435,16 @@ class ReportService {
           _id: "$categoryInfo._id",
           categoryName: { $first: "$categoryInfo.name" },
           totalQuantity: { $sum: "$items.quantity" },
-          totalRevenueUsd: { $sum: "$items.subtotal.usd" },
-          totalRevenueLbp: { $sum: "$items.subtotal.lbp" },
+          revenueBeforeDiscount: {
+            usd: { $sum: "$items.subtotal.usd" },
+            lbp: { $sum: "$items.subtotal.lbp" },
+          },
+          totalDiscounts: {
+            usd: { $sum: { $ifNull: ["$items.discount.amount.usd", 0] } },
+            lbp: { $sum: { $ifNull: ["$items.discount.amount.lbp", 0] } },
+          },
+          totalRevenueUsd: { $sum: "$items.finalAmount.usd" },
+          totalRevenueLbp: { $sum: "$items.finalAmount.lbp" },
           salesCount: { $sum: 1 },
         },
       },
@@ -400,6 +459,8 @@ class ReportService {
       categoryId: cat._id.toString(),
       categoryName: cat.categoryName,
       totalQuantitySold: cat.totalQuantity,
+      revenueBeforeDiscount: cat.revenueBeforeDiscount,
+      totalDiscounts: cat.totalDiscounts,
       totalRevenue: {
         usd: cat.totalRevenueUsd,
         lbp: cat.totalRevenueLbp,
@@ -436,8 +497,16 @@ class ReportService {
           productName: { $first: "$items.productName" },
           productSku: { $first: "$items.productSku" },
           totalQuantity: { $sum: "$items.quantity" },
-          totalRevenueUsd: { $sum: "$items.subtotal.usd" },
-          totalRevenueLbp: { $sum: "$items.subtotal.lbp" },
+          revenueBeforeDiscount: {
+            usd: { $sum: "$items.subtotal.usd" },
+            lbp: { $sum: "$items.subtotal.lbp" },
+          },
+          totalDiscounts: {
+            usd: { $sum: { $ifNull: ["$items.discount.amount.usd", 0] } },
+            lbp: { $sum: { $ifNull: ["$items.discount.amount.lbp", 0] } },
+          },
+          totalRevenueUsd: { $sum: "$items.finalAmount.usd" },
+          totalRevenueLbp: { $sum: "$items.finalAmount.lbp" },
           salesCount: { $sum: 1 },
         },
       },
@@ -453,6 +522,8 @@ class ReportService {
       productName: prod.productName,
       productSku: prod.productSku,
       totalQuantitySold: prod.totalQuantity,
+      revenueBeforeDiscount: prod.revenueBeforeDiscount,
+      totalDiscounts: prod.totalDiscounts,
       totalRevenue: {
         usd: prod.totalRevenueUsd,
         lbp: prod.totalRevenueLbp,
@@ -505,6 +576,25 @@ class ReportService {
               phone: (sale.customer as any).phone,
             }
           : null,
+        subtotalBeforeDiscount: sale.subtotalBeforeDiscount,
+        discounts: {
+          itemDiscounts: sale.totalItemDiscounts,
+          saleDiscount: sale.saleDiscount
+            ? {
+                name: sale.saleDiscount.discountName,
+                percentage: sale.saleDiscount.percentage,
+                amount: sale.saleDiscount.amount,
+              }
+            : null,
+          totalDiscounts: {
+            usd:
+              (sale.totalItemDiscounts?.usd || 0) +
+              (sale.saleDiscount?.amount.usd || 0),
+            lbp:
+              (sale.totalItemDiscounts?.lbp || 0) +
+              (sale.saleDiscount?.amount.lbp || 0),
+          },
+        },
         totals: sale.totals,
         amountPaid: sale.amountPaid,
         paymentMethod: sale.paymentMethod,
@@ -533,8 +623,17 @@ class ReportService {
       "Invoice Number",
       "Date",
       "Customer",
-      "Total USD",
-      "Total LBP",
+      "Subtotal Before Discount USD",
+      "Subtotal Before Discount LBP",
+      "Item Discounts USD",
+      "Item Discounts LBP",
+      "Sale Discount USD",
+      "Sale Discount LBP",
+      "Sale Discount Name",
+      "Total Discounts USD",
+      "Total Discounts LBP",
+      "Final Total USD",
+      "Final Total LBP",
       "Payment Method",
       "Payment Currency",
       "Amount Paid USD",
@@ -544,10 +643,26 @@ class ReportService {
     ].join(",");
 
     const rows = sales.map((sale) => {
+      const itemDiscounts = sale.totalItemDiscounts || { usd: 0, lbp: 0 };
+      const saleDiscount = sale.saleDiscount?.amount || { usd: 0, lbp: 0 };
+      const totalDiscounts = {
+        usd: itemDiscounts.usd + saleDiscount.usd,
+        lbp: itemDiscounts.lbp + saleDiscount.lbp,
+      };
+
       return [
         sale.invoiceNumber,
         sale.createdAt.toISOString(),
         sale.customer ? (sale.customer as any).name : "Walk-in",
+        sale.subtotalBeforeDiscount?.usd || 0,
+        sale.subtotalBeforeDiscount?.lbp || 0,
+        itemDiscounts.usd,
+        itemDiscounts.lbp,
+        saleDiscount.usd,
+        saleDiscount.lbp,
+        sale.saleDiscount?.discountName || "",
+        totalDiscounts.usd,
+        totalDiscounts.lbp,
         sale.totals.usd,
         sale.totals.lbp,
         sale.paymentMethod || "",
@@ -584,8 +699,18 @@ class ReportService {
             $hour: "$startTime",
           },
           totalSessions: { $sum: 1 },
-          totalUsd: { $sum: "$totalCost.usd" },
-          totalLbp: { $sum: "$totalCost.lbp" },
+          totalUsd: {
+            $sum: { $ifNull: ["$finalAmount.usd", "$totalCost.usd"] },
+          },
+          totalLbp: {
+            $sum: { $ifNull: ["$finalAmount.lbp", "$totalCost.lbp"] },
+          },
+          totalDiscountsUsd: {
+            $sum: { $ifNull: ["$discount.amount.usd", 0] },
+          },
+          totalDiscountsLbp: {
+            $sum: { $ifNull: ["$discount.amount.lbp", 0] },
+          },
           totalDuration: { $sum: "$duration" },
         },
       },
@@ -604,6 +729,7 @@ class ReportService {
         hour: hour._id,
         totalSessions: hour.totalSessions,
         revenue: { usd: hour.totalUsd, lbp: hour.totalLbp },
+        discounts: { usd: hour.totalDiscountsUsd, lbp: hour.totalDiscountsLbp },
         totalDuration: hour.totalDuration,
       })),
     };
@@ -631,8 +757,18 @@ class ReportService {
             $dateToString: { format: "%Y-%m-%d", date: "$startTime" },
           },
           totalSessions: { $sum: 1 },
-          totalUsd: { $sum: "$totalCost.usd" },
-          totalLbp: { $sum: "$totalCost.lbp" },
+          totalUsd: {
+            $sum: { $ifNull: ["$finalAmount.usd", "$totalCost.usd"] },
+          },
+          totalLbp: {
+            $sum: { $ifNull: ["$finalAmount.lbp", "$totalCost.lbp"] },
+          },
+          totalDiscountsUsd: {
+            $sum: { $ifNull: ["$discount.amount.usd", 0] },
+          },
+          totalDiscountsLbp: {
+            $sum: { $ifNull: ["$discount.amount.lbp", 0] },
+          },
           totalDuration: { $sum: "$duration" },
         },
       },
@@ -654,6 +790,7 @@ class ReportService {
         date: day._id,
         totalSessions: day.totalSessions,
         revenue: { usd: day.totalUsd, lbp: day.totalLbp },
+        discounts: { usd: day.totalDiscountsUsd, lbp: day.totalDiscountsLbp },
         totalDuration: day.totalDuration,
       })),
     };
@@ -667,6 +804,8 @@ class ReportService {
     totalSessions: number;
     averageSessionDuration: number;
     averageRevenue: { usd: number; lbp: number };
+    totalDiscounts: { usd: number; lbp: number };
+    revenueBeforeDiscounts: { usd: number; lbp: number };
   }> {
     const sessions = await GamingSession.find({
       startTime: { $gte: startDate, $lte: endDate },
@@ -676,11 +815,24 @@ class ReportService {
 
     const totalRevenue = sessions.reduce(
       (acc, session) => ({
-        usd: acc.usd + (session.totalCost?.usd || 0),
-        lbp: acc.lbp + (session.totalCost?.lbp || 0),
+        usd: acc.usd + (session.finalAmount?.usd || session.totalCost?.usd || 0),
+        lbp: acc.lbp + (session.finalAmount?.lbp || session.totalCost?.lbp || 0),
       }),
       { usd: 0, lbp: 0 }
     );
+
+    const totalDiscounts = sessions.reduce(
+      (acc, session) => ({
+        usd: acc.usd + (session.discount?.amount.usd || 0),
+        lbp: acc.lbp + (session.discount?.amount.lbp || 0),
+      }),
+      { usd: 0, lbp: 0 }
+    );
+
+    const revenueBeforeDiscounts = {
+      usd: totalRevenue.usd + totalDiscounts.usd,
+      lbp: totalRevenue.lbp + totalDiscounts.lbp,
+    };
 
     const totalSessions = sessions.length;
     const averageSessionDuration =
@@ -697,6 +849,8 @@ class ReportService {
         usd: totalSessions > 0 ? totalRevenue.usd / totalSessions : 0,
         lbp: totalSessions > 0 ? totalRevenue.lbp / totalSessions : 0,
       },
+      totalDiscounts,
+      revenueBeforeDiscounts,
     };
   }
 
@@ -739,8 +893,14 @@ class ReportService {
           pcNumber: { $first: "$pcInfo.pcNumber" },
           pcName: { $first: "$pcInfo.name" },
           totalSessions: { $sum: 1 },
-          totalRevenueUsd: { $sum: "$totalCost.usd" },
-          totalRevenueLbp: { $sum: "$totalCost.lbp" },
+          totalRevenueUsd: {
+            $sum: { $ifNull: ["$finalAmount.usd", "$totalCost.usd"] },
+          },
+          totalRevenueLbp: {
+            $sum: { $ifNull: ["$finalAmount.lbp", "$totalCost.lbp"] },
+          },
+          totalDiscountsUsd: { $sum: { $ifNull: ["$discount.amount.usd", 0] } },
+          totalDiscountsLbp: { $sum: { $ifNull: ["$discount.amount.lbp", 0] } },
           averageDuration: { $avg: "$duration" },
         },
       },
@@ -756,7 +916,204 @@ class ReportService {
         usd: pc.totalRevenueUsd || 0,
         lbp: pc.totalRevenueLbp || 0,
       },
+      totalDiscounts: {
+        usd: pc.totalDiscountsUsd || 0,
+        lbp: pc.totalDiscountsLbp || 0,
+      },
       averageDuration: Math.round(pc.averageDuration || 0),
+    }));
+  }
+
+  async getDiscountUsageReport(
+    startDate?: Date,
+    endDate?: Date
+  ): Promise<
+    Array<{
+      discountId: string;
+      discountName: string;
+      discountPercentage: number;
+      timesUsed: number;
+      totalDiscountAmount: { usd: number; lbp: number };
+      revenueImpact: { usd: number; lbp: number };
+    }>
+  > {
+    const matchQuery: any = {
+      status: SaleStatus.PAID,
+    };
+
+    if (startDate && endDate) {
+      matchQuery.createdAt = { $gte: startDate, $lte: endDate };
+    }
+
+    // Get item-level discounts
+    const itemDiscounts = await Sale.aggregate([
+      { $match: matchQuery },
+      { $unwind: "$items" },
+      {
+        $match: {
+          "items.discount": { $exists: true, $ne: null },
+        },
+      },
+      {
+        $group: {
+          _id: "$items.discount.discountId",
+          discountName: { $first: "$items.discount.discountName" },
+          discountPercentage: { $first: "$items.discount.percentage" },
+          timesUsed: { $sum: 1 },
+          totalDiscountUsd: { $sum: "$items.discount.amount.usd" },
+          totalDiscountLbp: { $sum: "$items.discount.amount.lbp" },
+          revenueBeforeDiscountUsd: { $sum: "$items.subtotal.usd" },
+          revenueBeforeDiscountLbp: { $sum: "$items.subtotal.lbp" },
+        },
+      },
+    ]);
+
+    // Get sale-level discounts
+    const saleDiscounts = await Sale.aggregate([
+      { $match: matchQuery },
+      {
+        $match: {
+          saleDiscount: { $exists: true, $ne: null },
+        },
+      },
+      {
+        $group: {
+          _id: "$saleDiscount.discountId",
+          discountName: { $first: "$saleDiscount.discountName" },
+          discountPercentage: { $first: "$saleDiscount.percentage" },
+          timesUsed: { $sum: 1 },
+          totalDiscountUsd: { $sum: "$saleDiscount.amount.usd" },
+          totalDiscountLbp: { $sum: "$saleDiscount.amount.lbp" },
+          revenueBeforeDiscountUsd: {
+            $sum: {
+              $add: ["$totals.usd", "$saleDiscount.amount.usd"],
+            },
+          },
+          revenueBeforeDiscountLbp: {
+            $sum: {
+              $add: ["$totals.lbp", "$saleDiscount.amount.lbp"],
+            },
+          },
+        },
+      },
+    ]);
+
+    // Combine and deduplicate
+    const allDiscounts = [...itemDiscounts, ...saleDiscounts];
+    const discountMap = new Map();
+
+    allDiscounts.forEach((discount) => {
+      const id = discount._id.toString();
+      if (discountMap.has(id)) {
+        const existing = discountMap.get(id);
+        existing.timesUsed += discount.timesUsed;
+        existing.totalDiscountAmount.usd += discount.totalDiscountUsd;
+        existing.totalDiscountAmount.lbp += discount.totalDiscountLbp;
+        existing.revenueImpact.usd += discount.revenueBeforeDiscountUsd;
+        existing.revenueImpact.lbp += discount.revenueBeforeDiscountLbp;
+      } else {
+        discountMap.set(id, {
+          discountId: id,
+          discountName: discount.discountName,
+          discountPercentage: discount.discountPercentage,
+          timesUsed: discount.timesUsed,
+          totalDiscountAmount: {
+            usd: discount.totalDiscountUsd,
+            lbp: discount.totalDiscountLbp,
+          },
+          revenueImpact: {
+            usd: discount.revenueBeforeDiscountUsd,
+            lbp: discount.revenueBeforeDiscountLbp,
+          },
+        });
+      }
+    });
+
+    return Array.from(discountMap.values()).sort(
+      (a, b) => b.totalDiscountAmount.usd - a.totalDiscountAmount.usd
+    );
+  }
+
+  async getCustomerDiscountReport(
+    customerId?: string,
+    startDate?: Date,
+    endDate?: Date
+  ): Promise<
+    Array<{
+      customerId: string;
+      customerName: string;
+      totalPurchases: number;
+      totalSpent: { usd: number; lbp: number };
+      totalDiscountsReceived: { usd: number; lbp: number };
+      amountSaved: { usd: number; lbp: number };
+    }>
+  > {
+    const matchQuery: any = {
+      status: SaleStatus.PAID,
+      customer: { $exists: true, $ne: null },
+    };
+
+    if (customerId) {
+      matchQuery.customer = customerId;
+    }
+
+    if (startDate && endDate) {
+      matchQuery.createdAt = { $gte: startDate, $lte: endDate };
+    }
+
+    const results = await Sale.aggregate([
+      { $match: matchQuery },
+      {
+        $lookup: {
+          from: "customers",
+          localField: "customer",
+          foreignField: "_id",
+          as: "customerInfo",
+        },
+      },
+      { $unwind: "$customerInfo" },
+      {
+        $group: {
+          _id: "$customer",
+          customerName: { $first: "$customerInfo.name" },
+          totalPurchases: { $sum: 1 },
+          totalSpentUsd: { $sum: "$totals.usd" },
+          totalSpentLbp: { $sum: "$totals.lbp" },
+          totalItemDiscountsUsd: {
+            $sum: { $ifNull: ["$totalItemDiscounts.usd", 0] },
+          },
+          totalItemDiscountsLbp: {
+            $sum: { $ifNull: ["$totalItemDiscounts.lbp", 0] },
+          },
+          totalSaleDiscountsUsd: {
+            $sum: { $ifNull: ["$saleDiscount.amount.usd", 0] },
+          },
+          totalSaleDiscountsLbp: {
+            $sum: { $ifNull: ["$saleDiscount.amount.lbp", 0] },
+          },
+        },
+      },
+      {
+        $sort: { totalSpentUsd: -1 },
+      },
+    ]);
+
+    return results.map((customer) => ({
+      customerId: customer._id.toString(),
+      customerName: customer.customerName,
+      totalPurchases: customer.totalPurchases,
+      totalSpent: {
+        usd: customer.totalSpentUsd,
+        lbp: customer.totalSpentLbp,
+      },
+      totalDiscountsReceived: {
+        usd: customer.totalItemDiscountsUsd + customer.totalSaleDiscountsUsd,
+        lbp: customer.totalItemDiscountsLbp + customer.totalSaleDiscountsLbp,
+      },
+      amountSaved: {
+        usd: customer.totalItemDiscountsUsd + customer.totalSaleDiscountsUsd,
+        lbp: customer.totalItemDiscountsLbp + customer.totalSaleDiscountsLbp,
+      },
     }));
   }
 }

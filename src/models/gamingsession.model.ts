@@ -25,7 +25,20 @@ export interface IGamingSession extends Document {
     usd: number;
     lbp: number;
   };
+  discount?: {
+    discountId: Types.ObjectId;
+    discountName: string;
+    percentage: number;
+    amount: {
+      usd: number;
+      lbp: number;
+    };
+  };
   totalCost: {
+    usd: number;
+    lbp: number;
+  };
+  finalAmount: {
     usd: number;
     lbp: number;
   };
@@ -83,7 +96,28 @@ const gamingSessionSchema = new Schema<IGamingSession>(
         min: 0,
       },
     },
+    discount: {
+      discountId: { type: Schema.Types.ObjectId, ref: "Discount" },
+      discountName: { type: String },
+      percentage: { type: Number, min: 0, max: 100 },
+      amount: {
+        usd: { type: Number, default: 0 },
+        lbp: { type: Number, default: 0 },
+      },
+    },
     totalCost: {
+      usd: {
+        type: Number,
+        default: 0,
+        min: 0,
+      },
+      lbp: {
+        type: Number,
+        default: 0,
+        min: 0,
+      },
+    },
+    finalAmount: {
       usd: {
         type: Number,
         default: 0,
