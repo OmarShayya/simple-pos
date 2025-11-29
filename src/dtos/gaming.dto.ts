@@ -97,9 +97,19 @@ export class StartSessionDto {
   customerName?: string;
 
   @IsOptional()
+  @IsMongoId()
+  saleId?: string;
+
+  @IsOptional()
   @IsString()
   @MaxLength(500)
   notes?: string;
+}
+
+export class EndSessionDto {
+  @IsOptional()
+  @IsMongoId()
+  discountId?: string;
 }
 
 export class ProcessSessionPaymentDto {

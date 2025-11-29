@@ -76,6 +76,10 @@ class SaleController {
   async getSaleById(req: CustomRequest, res: Response, next: NextFunction) {
     const { id } = req.params;
     const sale = await saleService.getSaleById(id);
+    const currentCostData = await saleService.getCurrentSaleCost(id);
+    const enrichedItems = await saleService.enrichSaleItemsWithSessionData(
+      sale.items
+    );
 
     return ApiResponseUtil.success(
       res,
@@ -89,27 +93,14 @@ class SaleController {
               phone: (sale.customer as any).phone,
             }
           : null,
-        items: sale.items.map((item) => ({
-          product:
-            typeof item.product === "object"
-              ? (item.product as any)._id.toString()
-              : item.product.toString(),
-          productId:
-            typeof item.product === "object"
-              ? (item.product as any)._id.toString()
-              : item.product.toString(),
-          productName: item.productName,
-          productSku: item.productSku,
-          quantity: item.quantity,
-          unitPrice: item.unitPrice,
-          discount: item.discount,
-          subtotal: item.subtotal,
-          finalAmount: item.finalAmount,
-        })),
+        items: enrichedItems,
         subtotalBeforeDiscount: sale.subtotalBeforeDiscount,
         totalItemDiscounts: sale.totalItemDiscounts,
         saleDiscount: sale.saleDiscount,
         totals: sale.totals,
+        currentTotals: currentCostData.currentTotals,
+        hasActiveSessions: currentCostData.hasActiveSessions,
+        activeSessions: currentCostData.activeSessions,
         paymentMethod: sale.paymentMethod,
         paymentCurrency: sale.paymentCurrency,
         amountPaid: sale.amountPaid,

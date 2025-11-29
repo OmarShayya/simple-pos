@@ -6,12 +6,18 @@ import Sale, {
 } from "../models/sale.model";
 import Product from "../models/product.model";
 import Customer from "../models/customer.model";
+import GamingSession, {
+  SessionPaymentStatus,
+  SessionStatus,
+} from "../models/gamingsession.model";
+import PC, { PCStatus } from "../models/pc.model";
 import customerService from "./customer.service";
 import productService from "./product.service";
 import discountService from "./discount.service";
 import Discount, { DiscountTarget } from "../models/discount.model";
 import { ApiError } from "../utils/apiError";
 import config from "../config/config";
+import socketService from "./socket.service";
 
 interface SaleFilters {
   status?: SaleStatus;
@@ -162,9 +168,17 @@ class SaleService {
       throw ApiError.badRequest("Can only update pending sales");
     }
 
-    if (data.items && data.items.length > 0) {
-      // Restore stock for old items
-      for (const oldItem of sale.items) {
+    // Handle items update - including empty array to remove all product items
+    if (data.items !== undefined) {
+      const sessionItems = sale.items.filter((item) =>
+        item.productSku.startsWith("SESSION-")
+      );
+      const productItems = sale.items.filter(
+        (item) => !item.productSku.startsWith("SESSION-")
+      );
+
+      // Restore stock for old product items
+      for (const oldItem of productItems) {
         await productService.updateStock(
           oldItem.product.toString(),
           oldItem.quantity
@@ -178,11 +192,14 @@ class SaleService {
         sale.customer = data.customerId ? (data.customerId as any) : undefined;
       }
 
-      // Process new items with discounts
-      const saleItems = await this.processSaleItems(data.items);
+      // Process new items (can be empty array)
+      const saleItems = data.items.length > 0
+        ? await this.processSaleItems(data.items)
+        : [];
 
-      // Calculate subtotal before any discounts
-      const subtotalBeforeDiscount = saleItems.reduce(
+      const allItems = [...sessionItems, ...saleItems];
+
+      const subtotalBeforeDiscount = allItems.reduce(
         (acc, item) => ({
           usd: acc.usd + item.subtotal.usd,
           lbp: acc.lbp + item.subtotal.lbp,
@@ -190,8 +207,7 @@ class SaleService {
         { usd: 0, lbp: 0 }
       );
 
-      // Calculate total item-level discounts
-      const totalItemDiscounts = saleItems.reduce(
+      const totalItemDiscounts = allItems.reduce(
         (acc, item) => ({
           usd: acc.usd + (item.discount?.amount.usd || 0),
           lbp: acc.lbp + (item.discount?.amount.lbp || 0),
@@ -199,13 +215,11 @@ class SaleService {
         { usd: 0, lbp: 0 }
       );
 
-      // Calculate total after item discounts
       let totals = {
         usd: subtotalBeforeDiscount.usd - totalItemDiscounts.usd,
         lbp: subtotalBeforeDiscount.lbp - totalItemDiscounts.lbp,
       };
 
-      // Apply sale-level discount if provided
       let saleDiscount = undefined;
       if (data.saleDiscountId) {
         const discountDoc = await Discount.findById(data.saleDiscountId);
@@ -241,7 +255,7 @@ class SaleService {
         };
       }
 
-      sale.items = saleItems;
+      sale.items = allItems as any;
       sale.subtotalBeforeDiscount = subtotalBeforeDiscount;
       sale.totalItemDiscounts = totalItemDiscounts;
       sale.saleDiscount = saleDiscount;
@@ -368,7 +382,7 @@ class SaleService {
       amount: number;
     }
   ): Promise<ISale> {
-    const sale = await Sale.findById(saleId);
+    let sale = await Sale.findById(saleId);
     if (!sale) {
       throw ApiError.notFound("Sale not found");
     }
@@ -379,6 +393,82 @@ class SaleService {
 
     if (sale.status === SaleStatus.CANCELLED) {
       throw ApiError.badRequest("Cannot pay a cancelled sale");
+    }
+
+    const activeSessions = await GamingSession.find({
+      sale: sale._id,
+      status: SessionStatus.ACTIVE,
+    }).populate("pc");
+
+    for (const session of activeSessions) {
+      const endTime = new Date();
+      const durationMs = endTime.getTime() - session.startTime.getTime();
+      const durationMinutes = Math.ceil(durationMs / (1000 * 60));
+      const durationHours = durationMinutes / 60;
+
+      const costUsd = session.hourlyRate.usd * durationHours;
+      const costLbp = session.hourlyRate.lbp * durationHours;
+
+      session.endTime = endTime;
+      session.duration = durationMinutes;
+      session.totalCost = {
+        usd: Math.round(costUsd * 100) / 100,
+        lbp: Math.round(costLbp),
+      };
+      session.finalAmount = { ...session.totalCost };
+      session.status = SessionStatus.COMPLETED;
+
+      await session.save();
+
+      const sessionItem = sale.items.find(
+        (item) => item.productSku === `SESSION-${session.sessionNumber}`
+      );
+
+      if (sessionItem) {
+        sessionItem.unitPrice = session.totalCost;
+        sessionItem.subtotal = session.totalCost;
+        sessionItem.finalAmount = session.finalAmount;
+      }
+
+      const pc = await PC.findById(session.pc);
+      if (pc) {
+        pc.status = PCStatus.AVAILABLE;
+        await pc.save();
+        socketService.lockPC(pc.pcNumber);
+      }
+    }
+
+    if (activeSessions.length > 0) {
+      sale.subtotalBeforeDiscount = sale.items.reduce(
+        (acc, item) => ({
+          usd: acc.usd + item.subtotal.usd,
+          lbp: acc.lbp + item.subtotal.lbp,
+        }),
+        { usd: 0, lbp: 0 }
+      );
+
+      sale.totalItemDiscounts = sale.items.reduce(
+        (acc, item) => ({
+          usd: acc.usd + (item.discount?.amount.usd || 0),
+          lbp: acc.lbp + (item.discount?.amount.lbp || 0),
+        }),
+        { usd: 0, lbp: 0 }
+      );
+
+      let totals = {
+        usd: sale.subtotalBeforeDiscount.usd - sale.totalItemDiscounts.usd,
+        lbp: sale.subtotalBeforeDiscount.lbp - sale.totalItemDiscounts.lbp,
+      };
+
+      if (sale.saleDiscount) {
+        totals = {
+          usd: totals.usd - sale.saleDiscount.amount.usd,
+          lbp: totals.lbp - sale.saleDiscount.amount.lbp,
+        };
+      }
+
+      sale.totals = totals;
+      await sale.save();
     }
 
     const totalInPaymentCurrency =
@@ -406,6 +496,11 @@ class SaleService {
 
     await sale.save();
 
+    await GamingSession.updateMany(
+      { sale: sale._id },
+      { paymentStatus: SessionPaymentStatus.PAID }
+    );
+
     if (sale.customer) {
       await customerService.updatePurchaseStats(
         sale.customer.toString(),
@@ -429,6 +524,124 @@ class SaleService {
     return sale;
   }
 
+  async enrichSaleItemsWithSessionData(items: any[]): Promise<any[]> {
+    const enrichedItems = await Promise.all(
+      items.map(async (item) => {
+        // Handle product ID - can be null for session items (PC not in Product collection)
+        let productId = null;
+        if (item.product) {
+          productId =
+            typeof item.product === "object" && item.product._id
+              ? item.product._id.toString()
+              : item.product.toString();
+        }
+
+        const enrichedItem = {
+          product: productId,
+          productId: productId,
+          productName: item.productName,
+          productSku: item.productSku,
+          quantity: item.quantity,
+          unitPrice: item.unitPrice,
+          discount: item.discount,
+          subtotal: item.subtotal,
+          finalAmount: item.finalAmount,
+        };
+
+        if (item.productSku.startsWith("SESSION-")) {
+          const sessionNumber = item.productSku.replace("SESSION-", "");
+          const session = await GamingSession.findOne({ sessionNumber }).populate("pc");
+
+          if (session) {
+            const pc = session.pc as any;
+            (enrichedItem as any).productName = `Gaming Session - ${pc?.pcNumber || pc?.name || "PC"}`;
+            (enrichedItem as any).sessionData = {
+              sessionId: session._id.toString(),
+              sessionNumber: session.sessionNumber,
+              pcNumber: pc?.pcNumber,
+              pcName: pc?.name,
+              hourlyRate: session.hourlyRate,
+              startTime: session.startTime,
+              status: session.status,
+            };
+
+            if (session.status === SessionStatus.ACTIVE) {
+              (enrichedItem as any).isActive = true;
+            }
+          }
+        }
+
+        return enrichedItem;
+      })
+    );
+
+    return enrichedItems;
+  }
+
+  async getCurrentSaleCost(saleId: string): Promise<{
+    currentTotals: { usd: number; lbp: number };
+    hasActiveSessions: boolean;
+    activeSessions: Array<{
+      sessionNumber: string;
+      currentDuration: number;
+      currentCost: { usd: number; lbp: number };
+    }>;
+  }> {
+    const sale = await Sale.findById(saleId);
+    if (!sale) {
+      throw ApiError.notFound("Sale not found");
+    }
+
+    const activeSessions = await GamingSession.find({
+      sale: saleId,
+      status: SessionStatus.ACTIVE,
+    });
+
+    if (activeSessions.length === 0) {
+      return {
+        currentTotals: sale.totals,
+        hasActiveSessions: false,
+        activeSessions: [],
+      };
+    }
+
+    let additionalCost = { usd: 0, lbp: 0 };
+    const activeSessionsData = activeSessions.map((session) => {
+      const now = new Date();
+      const durationMs = now.getTime() - session.startTime.getTime();
+      const durationMinutes = Math.ceil(durationMs / (1000 * 60));
+      const durationHours = durationMinutes / 60;
+
+      const costUsd = session.hourlyRate.usd * durationHours;
+      const costLbp = session.hourlyRate.lbp * durationHours;
+
+      const currentCost = {
+        usd: Math.round(costUsd * 100) / 100,
+        lbp: Math.round(costLbp),
+      };
+
+      additionalCost.usd += currentCost.usd;
+      additionalCost.lbp += currentCost.lbp;
+
+      return {
+        sessionNumber: session.sessionNumber,
+        currentDuration: durationMinutes,
+        currentCost,
+      };
+    });
+
+    const currentTotals = {
+      usd: sale.totals.usd + additionalCost.usd,
+      lbp: sale.totals.lbp + additionalCost.lbp,
+    };
+
+    return {
+      currentTotals,
+      hasActiveSessions: true,
+      activeSessions: activeSessionsData,
+    };
+  }
+
   async getSaleByInvoice(invoiceNumber: string): Promise<ISale> {
     const sale = await Sale.findOne({ invoiceNumber })
       .populate("customer")
@@ -443,7 +656,7 @@ class SaleService {
   }
 
   async getAllSales(filters: SaleFilters): Promise<{
-    sales: ISale[];
+    sales: any[];
     total: number;
     page: number;
     totalPages: number;
@@ -500,8 +713,59 @@ class SaleService {
       Sale.countDocuments(query),
     ]);
 
+    // Get all sale IDs to find active sessions
+    const saleIds = sales.map((s) => s._id);
+    const activeSessions = await GamingSession.find({
+      sale: { $in: saleIds },
+      status: SessionStatus.ACTIVE,
+    });
+
+    // Group sessions by sale ID
+    const sessionsBySale = new Map<string, typeof activeSessions>();
+    for (const session of activeSessions) {
+      if (!session.sale) continue;
+      const saleId = session.sale.toString();
+      if (!sessionsBySale.has(saleId)) {
+        sessionsBySale.set(saleId, []);
+      }
+      sessionsBySale.get(saleId)!.push(session);
+    }
+
+    // Enrich sales with real-time costs
+    const enrichedSales = sales.map((sale) => {
+      const saleObj = sale.toObject();
+      const saleSessions = sessionsBySale.get(sale._id.toString()) || [];
+
+      if (saleSessions.length > 0) {
+        let additionalCost = { usd: 0, lbp: 0 };
+
+        for (const session of saleSessions) {
+          const now = new Date();
+          const durationMs = now.getTime() - session.startTime.getTime();
+          const durationHours = durationMs / (1000 * 60 * 60);
+
+          additionalCost.usd += session.hourlyRate.usd * durationHours;
+          additionalCost.lbp += session.hourlyRate.lbp * durationHours;
+        }
+
+        return {
+          ...saleObj,
+          hasActiveSessions: true,
+          currentTotals: {
+            usd: Math.round((sale.totals.usd + additionalCost.usd) * 100) / 100,
+            lbp: Math.round(sale.totals.lbp + additionalCost.lbp),
+          },
+        };
+      }
+
+      return {
+        ...saleObj,
+        hasActiveSessions: false,
+      };
+    });
+
     return {
-      sales,
+      sales: enrichedSales,
       total,
       page,
       totalPages: Math.ceil(total / limit),
@@ -522,8 +786,28 @@ class SaleService {
       throw ApiError.badRequest("Sale is already cancelled");
     }
 
+    const activeSessions = await GamingSession.find({
+      sale: sale._id,
+      status: SessionStatus.ACTIVE,
+    }).populate("pc");
+
+    for (const session of activeSessions) {
+      session.status = SessionStatus.CANCELLED;
+      session.endTime = new Date();
+      await session.save();
+
+      const pc = await PC.findById(session.pc);
+      if (pc) {
+        pc.status = PCStatus.AVAILABLE;
+        await pc.save();
+        socketService.lockPC(pc.pcNumber);
+      }
+    }
+
     for (const item of sale.items) {
-      await productService.updateStock(item.product.toString(), item.quantity);
+      if (!item.productSku.startsWith("SESSION-")) {
+        await productService.updateStock(item.product.toString(), item.quantity);
+      }
     }
 
     sale.status = SaleStatus.CANCELLED;

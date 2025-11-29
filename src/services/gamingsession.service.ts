@@ -13,6 +13,7 @@ import customerService from "./customer.service";
 import discountService from "./discount.service";
 import Discount, { DiscountTarget } from "../models/discount.model";
 import { ApiError } from "../utils/apiError";
+import socketService from "./socket.service";
 
 interface SessionFilters {
   status?: SessionStatus;
@@ -57,10 +58,10 @@ class GamingSessionService {
       pcId: string;
       customerId?: string;
       customerName?: string;
+      saleId?: string;
       notes?: string;
     }
   ): Promise<IGamingSession> {
-    // Verify PC exists and is available
     const pc = await PC.findById(data.pcId);
     if (!pc) {
       throw ApiError.notFound("PC not found");
@@ -74,12 +75,10 @@ class GamingSessionService {
       throw ApiError.badRequest("PC is not active");
     }
 
-    // Check if customer exists if provided
     if (data.customerId) {
       await customerService.getCustomerById(data.customerId);
     }
 
-    // Check for existing active session on this PC
     const existingSession = await GamingSession.findOne({
       pc: data.pcId,
       status: SessionStatus.ACTIVE,
@@ -91,7 +90,44 @@ class GamingSessionService {
 
     const sessionNumber = await this.generateSessionNumber();
 
-    // Create session
+    const sessionItem = {
+      product: pc._id,
+      productName: `Gaming Session - ${pc.pcNumber}`,
+      productSku: `SESSION-${sessionNumber}`,
+      quantity: 1,
+      unitPrice: { usd: 0, lbp: 0 },
+      subtotal: { usd: 0, lbp: 0 },
+      finalAmount: { usd: 0, lbp: 0 },
+    };
+
+    let sale;
+    if (data.saleId) {
+      sale = await Sale.findById(data.saleId);
+      if (!sale) {
+        throw ApiError.notFound("Sale not found");
+      }
+      if (sale.status !== SaleStatus.PENDING) {
+        throw ApiError.badRequest("Can only add gaming session to pending sales");
+      }
+      if (data.customerId && sale.customer?.toString() !== data.customerId) {
+        throw ApiError.badRequest("Sale customer does not match session customer");
+      }
+      sale.items.push(sessionItem as any);
+      await sale.save();
+    } else {
+      const invoiceNumber = await this.generateInvoiceNumber();
+      sale = await Sale.create({
+        invoiceNumber,
+        customer: data.customerId,
+        items: [sessionItem],
+        subtotalBeforeDiscount: { usd: 0, lbp: 0 },
+        totalItemDiscounts: { usd: 0, lbp: 0 },
+        totals: { usd: 0, lbp: 0 },
+        cashier: cashierId,
+        status: SaleStatus.PENDING,
+      });
+    }
+
     const session = await GamingSession.create({
       sessionNumber,
       pc: data.pcId,
@@ -99,17 +135,43 @@ class GamingSessionService {
       customerName: data.customerName || "Walk-in",
       startTime: new Date(),
       hourlyRate: pc.hourlyRate,
+      totalCost: { usd: 0, lbp: 0 },
+      finalAmount: { usd: 0, lbp: 0 },
       startedBy: cashierId,
+      sale: sale._id,
       notes: data.notes,
       status: SessionStatus.ACTIVE,
       paymentStatus: SessionPaymentStatus.UNPAID,
     });
 
-    // Update PC status
     pc.status = PCStatus.OCCUPIED;
     await pc.save();
 
-    return await session.populate(["pc", "customer", "startedBy"]);
+    socketService.unlockPC(pc.pcNumber);
+
+    return await session.populate(["pc", "customer", "startedBy", "sale"]);
+  }
+
+  private async generateInvoiceNumber(): Promise<string> {
+    const date = new Date();
+    const year = date.getFullYear();
+    const month = String(date.getMonth() + 1).padStart(2, "0");
+    const day = String(date.getDate()).padStart(2, "0");
+
+    const lastSale = await Sale.findOne().sort({ createdAt: -1 });
+    let sequence = 1;
+
+    if (lastSale) {
+      const lastInvoiceDate = lastSale.invoiceNumber.substring(0, 8);
+      const todayDate = `${year}${month}${day}`;
+
+      if (lastInvoiceDate === todayDate) {
+        const lastSequence = parseInt(lastSale.invoiceNumber.substring(9), 10);
+        sequence = lastSequence + 1;
+      }
+    }
+
+    return `${year}${month}${day}-${String(sequence).padStart(4, "0")}`;
   }
 
   async endSession(
@@ -127,7 +189,6 @@ class GamingSessionService {
       throw ApiError.badRequest("Session is not active");
     }
 
-    // Calculate duration and cost
     const endTime = new Date();
     const durationMs = endTime.getTime() - session.startTime.getTime();
     const durationMinutes = Math.ceil(durationMs / (1000 * 60));
@@ -143,7 +204,7 @@ class GamingSessionService {
       lbp: Math.round(costLbp),
     };
 
-    // Apply discount if provided
+    let discountData = undefined;
     if (discountId) {
       const discountDoc = await Discount.findById(discountId);
       if (!discountDoc) {
@@ -165,19 +226,19 @@ class GamingSessionService {
         discountDoc.value
       );
 
-      session.discount = {
+      discountData = {
         discountId: discountDoc._id,
         discountName: discountDoc.name,
         percentage: discountDoc.value,
         amount: discountAmount,
       };
 
+      session.discount = discountData;
       session.finalAmount = {
         usd: session.totalCost.usd - discountAmount.usd,
         lbp: session.totalCost.lbp - discountAmount.lbp,
       };
     } else {
-      // No discount, final amount equals total cost
       session.finalAmount = { ...session.totalCost };
     }
 
@@ -186,11 +247,57 @@ class GamingSessionService {
 
     await session.save();
 
-    // Update PC status back to available
+    const sale = await Sale.findById(session.sale);
+    if (sale) {
+      const sessionItem = sale.items.find(
+        (item) => item.productSku === `SESSION-${session.sessionNumber}`
+      );
+
+      if (sessionItem) {
+        sessionItem.unitPrice = session.totalCost;
+        sessionItem.subtotal = session.totalCost;
+        sessionItem.discount = discountData;
+        sessionItem.finalAmount = session.finalAmount;
+
+        sale.subtotalBeforeDiscount = sale.items.reduce(
+          (acc, item) => ({
+            usd: acc.usd + item.subtotal.usd,
+            lbp: acc.lbp + item.subtotal.lbp,
+          }),
+          { usd: 0, lbp: 0 }
+        );
+
+        sale.totalItemDiscounts = sale.items.reduce(
+          (acc, item) => ({
+            usd: acc.usd + (item.discount?.amount.usd || 0),
+            lbp: acc.lbp + (item.discount?.amount.lbp || 0),
+          }),
+          { usd: 0, lbp: 0 }
+        );
+
+        let totals = {
+          usd: sale.subtotalBeforeDiscount.usd - sale.totalItemDiscounts.usd,
+          lbp: sale.subtotalBeforeDiscount.lbp - sale.totalItemDiscounts.lbp,
+        };
+
+        if (sale.saleDiscount) {
+          totals = {
+            usd: totals.usd - sale.saleDiscount.amount.usd,
+            lbp: totals.lbp - sale.saleDiscount.amount.lbp,
+          };
+        }
+
+        sale.totals = totals;
+        await sale.save();
+      }
+    }
+
     const pc = await PC.findById(session.pc);
     if (pc) {
       pc.status = PCStatus.AVAILABLE;
       await pc.save();
+
+      socketService.lockPC(pc.pcNumber);
     }
 
     return await session.populate([
@@ -210,119 +317,141 @@ class GamingSessionService {
       amount: number;
     }
   ): Promise<IGamingSession> {
-    const session = await GamingSession.findById(sessionId).populate([
-      "pc",
-      "customer",
-      "startedBy",
-      "endedBy",
-    ]);
+    let session = await GamingSession.findById(sessionId).populate(["sale", "pc"]);
 
     if (!session) {
       throw ApiError.notFound("Session not found");
     }
 
-    if (session.status !== SessionStatus.COMPLETED) {
-      throw ApiError.badRequest(
-        "Can only process payment for completed sessions"
-      );
+    if (session.status === SessionStatus.ACTIVE) {
+      const endTime = new Date();
+      const durationMs = endTime.getTime() - session.startTime.getTime();
+      const durationMinutes = Math.ceil(durationMs / (1000 * 60));
+      const durationHours = durationMinutes / 60;
+
+      const costUsd = session.hourlyRate.usd * durationHours;
+      const costLbp = session.hourlyRate.lbp * durationHours;
+
+      session.endTime = endTime;
+      session.duration = durationMinutes;
+      session.totalCost = {
+        usd: Math.round(costUsd * 100) / 100,
+        lbp: Math.round(costLbp),
+      };
+      session.finalAmount = { ...session.totalCost };
+      session.status = SessionStatus.COMPLETED;
+
+      await session.save();
+
+      const sale = await Sale.findById(session.sale);
+      if (sale) {
+        const sessionItem = sale.items.find(
+          (item) => item.productSku === `SESSION-${session.sessionNumber}`
+        );
+
+        if (sessionItem) {
+          sessionItem.unitPrice = session.totalCost;
+          sessionItem.subtotal = session.totalCost;
+          sessionItem.finalAmount = session.finalAmount;
+
+          sale.subtotalBeforeDiscount = sale.items.reduce(
+            (acc, item) => ({
+              usd: acc.usd + item.subtotal.usd,
+              lbp: acc.lbp + item.subtotal.lbp,
+            }),
+            { usd: 0, lbp: 0 }
+          );
+
+          sale.totalItemDiscounts = sale.items.reduce(
+            (acc, item) => ({
+              usd: acc.usd + (item.discount?.amount.usd || 0),
+              lbp: acc.lbp + (item.discount?.amount.lbp || 0),
+            }),
+            { usd: 0, lbp: 0 }
+          );
+
+          let totals = {
+            usd: sale.subtotalBeforeDiscount.usd - sale.totalItemDiscounts.usd,
+            lbp: sale.subtotalBeforeDiscount.lbp - sale.totalItemDiscounts.lbp,
+          };
+
+          if (sale.saleDiscount) {
+            totals = {
+              usd: totals.usd - sale.saleDiscount.amount.usd,
+              lbp: totals.lbp - sale.saleDiscount.amount.lbp,
+            };
+          }
+
+          sale.totals = totals;
+          await sale.save();
+        }
+      }
+
+      const pc = await PC.findById(session.pc);
+      if (pc) {
+        pc.status = PCStatus.AVAILABLE;
+        await pc.save();
+        socketService.lockPC(pc.pcNumber);
+      }
+    }
+
+    if (session.status === SessionStatus.CANCELLED) {
+      throw ApiError.badRequest("Cannot process payment for cancelled session");
     }
 
     if (session.paymentStatus === SessionPaymentStatus.PAID) {
       throw ApiError.badRequest("Session is already paid");
     }
 
-    // Verify payment amount - use finalAmount which includes discounts
-    const totalDue =
-      paymentData.paymentCurrency === Currency.USD
-        ? session.finalAmount.usd
-        : session.finalAmount.lbp;
+    if (!session.sale) {
+      throw ApiError.badRequest("Session has no associated sale");
+    }
 
-    if (paymentData.amount < totalDue) {
+    const sale = await Sale.findById(session.sale);
+    if (!sale) {
+      throw ApiError.notFound("Associated sale not found");
+    }
+
+    if (sale.status === SaleStatus.PAID) {
+      throw ApiError.badRequest("Sale is already paid");
+    }
+
+    if (sale.status === SaleStatus.CANCELLED) {
+      throw ApiError.badRequest("Cannot pay a cancelled sale");
+    }
+
+    const totalInPaymentCurrency =
+      paymentData.paymentCurrency === Currency.USD
+        ? sale.totals.usd
+        : sale.totals.lbp;
+
+    if (paymentData.amount < totalInPaymentCurrency) {
       throw ApiError.badRequest("Insufficient payment amount");
     }
 
-    // Create a sale record for this session
-    const saleData = {
-      customer: session.customer?._id,
-      items: [
-        {
-          // Create a virtual product for gaming session
-          product: session.pc._id,
-          productName: `Gaming - ${(session.pc as any).name}`,
-          productSku: `GAMING-${(session.pc as any).pcNumber}`,
-          quantity: 1,
-          unitPrice: session.totalCost,
-          discount: session.discount,
-          subtotal: session.totalCost,
-          finalAmount: session.finalAmount,
-        },
-      ],
-      subtotalBeforeDiscount: session.totalCost,
-      totalItemDiscounts: session.discount
-        ? session.discount.amount
-        : { usd: 0, lbp: 0 },
-      totals: session.finalAmount,
-      paymentMethod: paymentData.paymentMethod,
-      paymentCurrency: paymentData.paymentCurrency,
-      amountPaid:
-        paymentData.paymentCurrency === Currency.USD
-          ? {
-              usd: paymentData.amount,
-              lbp: paymentData.amount * 89500, // Use actual rate from config
-            }
-          : {
-              usd: paymentData.amount / 89500,
-              lbp: paymentData.amount,
-            },
-      status: SaleStatus.PAID,
-      cashier: session.endedBy || session.startedBy,
-      notes: `Gaming Session: ${session.sessionNumber} - Duration: ${Math.floor(
-        session.duration! / 60
-      )}h ${session.duration! % 60}m${
-        session.discount ? ` - Discount Applied: ${session.discount.discountName}` : ""
-      }`,
-      paidAt: new Date(),
-    };
+    sale.paymentMethod = paymentData.paymentMethod;
+    sale.paymentCurrency = paymentData.paymentCurrency;
 
-    // Generate invoice number for sale
-    const date = new Date();
-    const year = date.getFullYear();
-    const month = String(date.getMonth() + 1).padStart(2, "0");
-    const day = String(date.getDate()).padStart(2, "0");
-
-    const lastSale = await Sale.findOne().sort({ createdAt: -1 });
-    let sequence = 1;
-
-    if (lastSale) {
-      const lastInvoiceDate = lastSale.invoiceNumber.substring(0, 8);
-      const todayDate = `${year}${month}${day}`;
-
-      if (lastInvoiceDate === todayDate) {
-        const lastSequence = parseInt(lastSale.invoiceNumber.substring(9), 10);
-        sequence = lastSequence + 1;
-      }
+    if (paymentData.paymentCurrency === Currency.USD) {
+      sale.amountPaid.usd = paymentData.amount;
+      sale.amountPaid.lbp = paymentData.amount * 89500;
+    } else {
+      sale.amountPaid.lbp = paymentData.amount;
+      sale.amountPaid.usd = paymentData.amount / 89500;
     }
 
-    const invoiceNumber = `${year}${month}${day}-${String(sequence).padStart(
-      4,
-      "0"
-    )}`;
+    sale.status = SaleStatus.PAID;
+    sale.paidAt = new Date();
 
-    const sale = await Sale.create({
-      invoiceNumber,
-      ...saleData,
-    });
+    await sale.save();
 
-    // Update session with sale reference
-    session.sale = sale._id;
     session.paymentStatus = SessionPaymentStatus.PAID;
     await session.save();
 
-    // Update customer stats if applicable - use finalAmount which includes discounts
-    if (session.customer) {
+    if (sale.customer) {
       await customerService.updatePurchaseStats(
-        session.customer._id.toString(),
-        session.finalAmount.usd
+        sale.customer.toString(),
+        sale.totals.usd
       );
     }
 
@@ -484,11 +613,55 @@ class GamingSessionService {
     session.endedBy = cashierId as any;
     await session.save();
 
-    // Update PC status back to available
+    const sale = await Sale.findById(session.sale);
+    if (sale && sale.status === SaleStatus.PENDING) {
+      sale.items = sale.items.filter(
+        (item) => item.productSku !== `SESSION-${session.sessionNumber}`
+      );
+
+      if (sale.items.length === 0) {
+        sale.status = SaleStatus.CANCELLED;
+      } else {
+        sale.subtotalBeforeDiscount = sale.items.reduce(
+          (acc, item) => ({
+            usd: acc.usd + item.subtotal.usd,
+            lbp: acc.lbp + item.subtotal.lbp,
+          }),
+          { usd: 0, lbp: 0 }
+        );
+
+        sale.totalItemDiscounts = sale.items.reduce(
+          (acc, item) => ({
+            usd: acc.usd + (item.discount?.amount.usd || 0),
+            lbp: acc.lbp + (item.discount?.amount.lbp || 0),
+          }),
+          { usd: 0, lbp: 0 }
+        );
+
+        let totals = {
+          usd: sale.subtotalBeforeDiscount.usd - sale.totalItemDiscounts.usd,
+          lbp: sale.subtotalBeforeDiscount.lbp - sale.totalItemDiscounts.lbp,
+        };
+
+        if (sale.saleDiscount) {
+          totals = {
+            usd: totals.usd - sale.saleDiscount.amount.usd,
+            lbp: totals.lbp - sale.saleDiscount.amount.lbp,
+          };
+        }
+
+        sale.totals = totals;
+      }
+
+      await sale.save();
+    }
+
     const pc = await PC.findById(session.pc);
     if (pc) {
       pc.status = PCStatus.AVAILABLE;
       await pc.save();
+
+      socketService.lockPC(pc.pcNumber);
     }
 
     return await session.populate(["pc", "customer", "startedBy", "endedBy"]);

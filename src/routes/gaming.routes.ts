@@ -8,6 +8,7 @@ import {
   CreatePCDto,
   UpdatePCDto,
   StartSessionDto,
+  EndSessionDto,
   ProcessSessionPaymentDto,
 } from "../dtos/gaming.dto";
 import { UserRole } from "../models/user.model";
@@ -49,24 +50,12 @@ router.delete(
   asyncHandler(pcController.deletePC)
 );
 
+// Session routes - Order matters! Specific routes must come before generic :id route
 router.post(
   "/sessions",
   authenticate,
   validateDto(StartSessionDto),
   asyncHandler(gamingSessionController.startSession)
-);
-
-router.post(
-  "/sessions/:id/end",
-  authenticate,
-  asyncHandler(gamingSessionController.endSession)
-);
-
-router.post(
-  "/sessions/:id/payment",
-  authenticate,
-  validateDto(ProcessSessionPaymentDto),
-  asyncHandler(gamingSessionController.processPayment)
 );
 
 router.get(
@@ -88,10 +77,19 @@ router.get(
   asyncHandler(gamingSessionController.getTodayStats)
 );
 
-router.get(
-  "/sessions/:id",
+// Specific :id subroutes - must come before generic :id route
+router.put(
+  "/sessions/:id/end",
   authenticate,
-  asyncHandler(gamingSessionController.getSessionById)
+  validateDto(EndSessionDto),
+  asyncHandler(gamingSessionController.endSession)
+);
+
+router.post(
+  "/sessions/:id/payment",
+  authenticate,
+  validateDto(ProcessSessionPaymentDto),
+  asyncHandler(gamingSessionController.processPayment)
 );
 
 router.get(
@@ -105,6 +103,13 @@ router.patch(
   authenticate,
   authorize(UserRole.ADMIN, UserRole.MANAGER),
   asyncHandler(gamingSessionController.cancelSession)
+);
+
+// Generic :id route - must come LAST
+router.get(
+  "/sessions/:id",
+  authenticate,
+  asyncHandler(gamingSessionController.getSessionById)
 );
 
 router.post(

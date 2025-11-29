@@ -2,7 +2,11 @@ import { Response, NextFunction } from "express";
 import { CustomRequest } from "../types";
 import gamingSessionService from "../services/gamingsession.service";
 import { ApiResponseUtil } from "../utils/apiResponse";
-import { StartSessionDto, ProcessSessionPaymentDto } from "../dtos/gaming.dto";
+import {
+  StartSessionDto,
+  EndSessionDto,
+  ProcessSessionPaymentDto,
+} from "../dtos/gaming.dto";
 import {
   SessionStatus,
   SessionPaymentStatus,
@@ -34,6 +38,12 @@ class GamingSessionController {
         startTime: session.startTime,
         hourlyRate: session.hourlyRate,
         status: session.status,
+        sale: session.sale
+          ? {
+              id: (session.sale as any)._id.toString(),
+              invoiceNumber: (session.sale as any).invoiceNumber,
+            }
+          : null,
         startedBy: {
           name: (session.startedBy as any).name,
         },
@@ -44,8 +54,13 @@ class GamingSessionController {
 
   async endSession(req: CustomRequest, res: Response, next: NextFunction) {
     const { id } = req.params;
+    const data: EndSessionDto = req.body;
     const cashierId = req.user!.id;
-    const session = await gamingSessionService.endSession(id, cashierId);
+    const session = await gamingSessionService.endSession(
+      id,
+      cashierId,
+      data.discountId
+    );
 
     return ApiResponseUtil.success(
       res,
@@ -68,8 +83,17 @@ class GamingSessionController {
         endTime: session.endTime,
         duration: session.duration,
         totalCost: session.totalCost,
+        discount: session.discount,
+        finalAmount: session.finalAmount,
         status: session.status,
         paymentStatus: session.paymentStatus,
+        sale: session.sale
+          ? {
+              id: (session.sale as any)._id.toString(),
+              invoiceNumber: (session.sale as any).invoiceNumber,
+              totals: (session.sale as any).totals,
+            }
+          : null,
       },
       "Gaming session ended successfully"
     );

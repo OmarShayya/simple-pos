@@ -6,7 +6,7 @@ import { ApiError } from "../utils/apiError";
 export const validateDto = (dtoClass: any) => {
   return async (req: Request, res: Response, next: NextFunction) => {
     try {
-      const dtoInstance = plainToInstance(dtoClass, req.body);
+      const dtoInstance = plainToInstance(dtoClass, req.body || {});
       const errors: ValidationError[] = await validate(dtoInstance, {
         whitelist: true,
         forbidNonWhitelisted: true,
