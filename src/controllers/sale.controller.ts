@@ -241,6 +241,8 @@ class SaleController {
         totalItemDiscounts: sale.totalItemDiscounts,
         saleDiscount: sale.saleDiscount,
         totals: sale.totals,
+        currentTotals: sale.currentTotals,
+        hasActiveSessions: sale.hasActiveSessions,
         paymentMethod: sale.paymentMethod,
         paymentCurrency: sale.paymentCurrency,
         status: sale.status,

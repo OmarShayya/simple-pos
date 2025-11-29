@@ -10,6 +10,7 @@ import {
   Min,
   IsEnum,
   MaxLength,
+  ValidateIf,
 } from "class-validator";
 import { Type } from "class-transformer";
 import { PaymentMethod, Currency } from "../models/sale.model";
@@ -27,6 +28,16 @@ export class SaleItemDto {
   @IsOptional()
   @IsMongoId()
   discountId?: string;
+}
+
+export class SessionDiscountDto {
+  @IsNotEmpty()
+  @IsString()
+  productSku!: string;
+
+  @IsOptional()
+  @IsMongoId()
+  discountId?: string; // Optional - if not provided, removes discount from this session
 }
 
 export class CreateSaleDto {
@@ -53,6 +64,7 @@ export class CreateSaleDto {
 
 export class UpdateSaleDto {
   @IsOptional()
+  @ValidateIf((o) => o.customerId !== "")
   @IsMongoId()
   customerId?: string;
 
@@ -63,6 +75,13 @@ export class UpdateSaleDto {
   items?: SaleItemDto[];
 
   @IsOptional()
+  @IsArray()
+  @ValidateNested({ each: true })
+  @Type(() => SessionDiscountDto)
+  sessionDiscounts?: SessionDiscountDto[];
+
+  @IsOptional()
+  @ValidateIf((o) => o.saleDiscountId !== "")
   @IsMongoId()
   saleDiscountId?: string;
 

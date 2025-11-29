@@ -155,6 +155,7 @@ class SaleService {
     data: {
       customerId?: string;
       items?: SaleItemInput[];
+      sessionDiscounts?: Array<{ productSku: string; discountId?: string }>;
       saleDiscountId?: string;
       notes?: string;
     }
@@ -166,6 +167,14 @@ class SaleService {
 
     if (sale.status !== SaleStatus.PENDING) {
       throw ApiError.badRequest("Can only update pending sales");
+    }
+
+    // Handle customer update
+    if (data.customerId !== undefined) {
+      if (data.customerId) {
+        await customerService.getCustomerById(data.customerId);
+      }
+      sale.customer = data.customerId ? (data.customerId as any) : undefined;
     }
 
     // Handle items update - including empty array to remove all product items
@@ -185,42 +194,107 @@ class SaleService {
         );
       }
 
-      if (data.customerId !== undefined) {
-        if (data.customerId) {
-          await customerService.getCustomerById(data.customerId);
-        }
-        sale.customer = data.customerId ? (data.customerId as any) : undefined;
-      }
-
       // Process new items (can be empty array)
       const saleItems = data.items.length > 0
         ? await this.processSaleItems(data.items)
         : [];
 
-      const allItems = [...sessionItems, ...saleItems];
+      sale.items = [...sessionItems, ...saleItems] as any;
 
-      const subtotalBeforeDiscount = allItems.reduce(
-        (acc, item) => ({
-          usd: acc.usd + item.subtotal.usd,
-          lbp: acc.lbp + item.subtotal.lbp,
-        }),
-        { usd: 0, lbp: 0 }
-      );
+      // Deduct stock for new items
+      for (const item of data.items) {
+        await productService.updateStock(item.productId, -item.quantity);
+      }
+    }
 
-      const totalItemDiscounts = allItems.reduce(
-        (acc, item) => ({
-          usd: acc.usd + (item.discount?.amount.usd || 0),
-          lbp: acc.lbp + (item.discount?.amount.lbp || 0),
-        }),
-        { usd: 0, lbp: 0 }
-      );
+    // Handle session discounts
+    if (data.sessionDiscounts && data.sessionDiscounts.length > 0) {
+      for (const sessionDiscount of data.sessionDiscounts) {
+        const sessionItem = sale.items.find(
+          (item) => item.productSku === sessionDiscount.productSku
+        );
 
-      let totals = {
-        usd: subtotalBeforeDiscount.usd - totalItemDiscounts.usd,
-        lbp: subtotalBeforeDiscount.lbp - totalItemDiscounts.lbp,
-      };
+        if (!sessionItem) {
+          throw ApiError.notFound(
+            `Session item with SKU ${sessionDiscount.productSku} not found`
+          );
+        }
 
-      let saleDiscount = undefined;
+        if (!sessionItem.productSku.startsWith("SESSION-")) {
+          throw ApiError.badRequest(
+            `Item ${sessionDiscount.productSku} is not a gaming session`
+          );
+        }
+
+        if (sessionDiscount.discountId) {
+          // Apply discount
+          const discountDoc = await Discount.findById(sessionDiscount.discountId);
+          if (!discountDoc) {
+            throw ApiError.notFound(
+              `Discount ${sessionDiscount.discountId} not found`
+            );
+          }
+
+          if (!discountDoc.isActive) {
+            throw ApiError.badRequest(
+              `Discount ${discountDoc.name} is not active`
+            );
+          }
+
+          if (discountDoc.target !== DiscountTarget.GAMING_SESSION) {
+            throw ApiError.badRequest(
+              `Discount ${discountDoc.name} cannot be applied to gaming sessions`
+            );
+          }
+
+          const discountAmount = discountService.calculateDiscountAmount(
+            sessionItem.subtotal,
+            discountDoc.value
+          );
+
+          sessionItem.discount = {
+            discountId: discountDoc._id,
+            discountName: discountDoc.name,
+            percentage: discountDoc.value,
+            amount: discountAmount,
+          };
+
+          sessionItem.finalAmount = {
+            usd: sessionItem.subtotal.usd - discountAmount.usd,
+            lbp: sessionItem.subtotal.lbp - discountAmount.lbp,
+          };
+        } else {
+          // Remove discount
+          sessionItem.discount = undefined;
+          sessionItem.finalAmount = { ...sessionItem.subtotal };
+        }
+      }
+    }
+
+    // Recalculate totals
+    const subtotalBeforeDiscount = sale.items.reduce(
+      (acc, item) => ({
+        usd: acc.usd + item.subtotal.usd,
+        lbp: acc.lbp + item.subtotal.lbp,
+      }),
+      { usd: 0, lbp: 0 }
+    );
+
+    const totalItemDiscounts = sale.items.reduce(
+      (acc, item) => ({
+        usd: acc.usd + (item.discount?.amount.usd || 0),
+        lbp: acc.lbp + (item.discount?.amount.lbp || 0),
+      }),
+      { usd: 0, lbp: 0 }
+    );
+
+    let totals = {
+      usd: subtotalBeforeDiscount.usd - totalItemDiscounts.usd,
+      lbp: subtotalBeforeDiscount.lbp - totalItemDiscounts.lbp,
+    };
+
+    // Handle sale-level discount
+    if (data.saleDiscountId !== undefined) {
       if (data.saleDiscountId) {
         const discountDoc = await Discount.findById(data.saleDiscountId);
         if (!discountDoc) {
@@ -242,7 +316,7 @@ class SaleService {
           discountDoc.value
         );
 
-        saleDiscount = {
+        sale.saleDiscount = {
           discountId: discountDoc._id,
           discountName: discountDoc.name,
           percentage: discountDoc.value,
@@ -253,19 +327,28 @@ class SaleService {
           usd: totals.usd - saleDiscountAmount.usd,
           lbp: totals.lbp - saleDiscountAmount.lbp,
         };
+      } else {
+        // Remove sale discount
+        sale.saleDiscount = undefined;
       }
+    } else if (sale.saleDiscount) {
+      // Recalculate existing sale discount with new totals
+      const saleDiscountAmount = discountService.calculateDiscountAmount(
+        totals,
+        sale.saleDiscount.percentage
+      );
 
-      sale.items = allItems as any;
-      sale.subtotalBeforeDiscount = subtotalBeforeDiscount;
-      sale.totalItemDiscounts = totalItemDiscounts;
-      sale.saleDiscount = saleDiscount;
-      sale.totals = totals;
+      sale.saleDiscount.amount = saleDiscountAmount;
 
-      // Deduct stock for new items
-      for (const item of data.items) {
-        await productService.updateStock(item.productId, -item.quantity);
-      }
+      totals = {
+        usd: totals.usd - saleDiscountAmount.usd,
+        lbp: totals.lbp - saleDiscountAmount.lbp,
+      };
     }
+
+    sale.subtotalBeforeDiscount = subtotalBeforeDiscount;
+    sale.totalItemDiscounts = totalItemDiscounts;
+    sale.totals = totals;
 
     if (data.notes !== undefined) {
       sale.notes = data.notes;
