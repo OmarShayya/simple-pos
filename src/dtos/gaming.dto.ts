@@ -101,6 +101,10 @@ export class StartSessionDto {
   saleId?: string;
 
   @IsOptional()
+  @IsBoolean()
+  createSale?: boolean; // Override for config.gaming.autoCreateSale
+
+  @IsOptional()
   @IsString()
   @MaxLength(500)
   notes?: string;

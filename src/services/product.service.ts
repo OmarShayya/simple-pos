@@ -1,4 +1,4 @@
-import Product, { IProduct } from "../models/product.model";
+import Product, { IProduct, ProductType } from "../models/product.model";
 import Category from "../models/category.model";
 import { ApiError } from "../utils/apiError";
 import config from "../config/config";
@@ -18,10 +18,11 @@ class ProductService {
   async createProduct(data: {
     name: string;
     description?: string;
-    sku: string;
+    sku?: string;
     category: string;
-    pricing: { usd: number; lbp: number };
-    inventory: { quantity: number; minStockLevel?: number };
+    productType?: ProductType;
+    pricing?: { usd: number; lbp: number };
+    inventory?: { quantity: number; minStockLevel?: number };
     image?: string;
     displayOnMenu?: boolean;
   }): Promise<IProduct> {
@@ -31,19 +32,45 @@ class ProductService {
       throw ApiError.notFound("Category not found");
     }
 
-    // Check if SKU already exists
-    const existingSku = await Product.findOne({
-      sku: data.sku.toUpperCase(),
-    });
-    if (existingSku) {
-      throw ApiError.conflict("Product with this SKU already exists");
+    const productType = data.productType || ProductType.PHYSICAL;
+
+    // For physical products, SKU is required
+    if (productType === ProductType.PHYSICAL) {
+      if (!data.sku) {
+        throw ApiError.badRequest("SKU is required for physical products");
+      }
+      // Check if SKU already exists
+      const existingSku = await Product.findOne({
+        sku: data.sku.toUpperCase(),
+      });
+      if (existingSku) {
+        throw ApiError.conflict("Product with this SKU already exists");
+      }
     }
 
-    const product = await Product.create({
-      ...data,
-      sku: data.sku.toUpperCase(),
+    const productData: any = {
+      name: data.name,
+      description: data.description,
+      category: data.category,
+      productType,
+      image: data.image,
       displayOnMenu: data.displayOnMenu || false,
-    });
+    };
+
+    // For physical products, require pricing and inventory
+    if (productType === ProductType.PHYSICAL) {
+      if (!data.pricing) {
+        throw ApiError.badRequest("Pricing is required for physical products");
+      }
+      productData.sku = data.sku!.toUpperCase();
+      productData.pricing = data.pricing;
+      productData.inventory = data.inventory || { quantity: 0, minStockLevel: 10 };
+    } else {
+      // Service products - pricing optional, no inventory tracking
+      productData.pricing = data.pricing || { usd: 0, lbp: 0 };
+    }
+
+    const product = await Product.create(productData);
 
     return await product.populate("category");
   }
@@ -180,6 +207,15 @@ class ProductService {
       throw ApiError.notFound("Product not found");
     }
 
+    // Service products don't track inventory
+    if (product.productType === ProductType.SERVICE) {
+      return await product.populate("category");
+    }
+
+    if (!product.inventory) {
+      throw ApiError.badRequest("Product has no inventory to update");
+    }
+
     const newQuantity = product.inventory.quantity + quantityChange;
 
     if (newQuantity < 0) {
@@ -202,6 +238,7 @@ class ProductService {
   async getLowStockProducts(): Promise<IProduct[]> {
     return await Product.find({
       isActive: true,
+      productType: ProductType.PHYSICAL,
       "inventory.isLowStock": true,
     })
       .populate("category")

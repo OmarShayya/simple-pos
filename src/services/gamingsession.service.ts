@@ -14,6 +14,7 @@ import discountService from "./discount.service";
 import Discount, { DiscountTarget } from "../models/discount.model";
 import { ApiError } from "../utils/apiError";
 import socketService from "./socket.service";
+import config from "../config/config";
 
 interface SessionFilters {
   status?: SessionStatus;
@@ -59,6 +60,7 @@ class GamingSessionService {
       customerId?: string;
       customerName?: string;
       saleId?: string;
+      createSale?: boolean;
       notes?: string;
     }
   ): Promise<IGamingSession> {
@@ -90,18 +92,16 @@ class GamingSessionService {
 
     const sessionNumber = await this.generateSessionNumber();
 
-    const sessionItem = {
-      product: pc._id,
-      productName: `Gaming Session - ${pc.pcNumber}`,
-      productSku: `SESSION-${sessionNumber}`,
-      quantity: 1,
-      unitPrice: { usd: 0, lbp: 0 },
-      subtotal: { usd: 0, lbp: 0 },
-      finalAmount: { usd: 0, lbp: 0 },
-    };
+    // Determine if we should create a sale
+    // Priority: request override > config default
+    const shouldCreateSale = data.createSale !== undefined
+      ? data.createSale
+      : config.gaming.autoCreateSale;
 
-    let sale;
+    let sale = null;
+
     if (data.saleId) {
+      // If saleId is provided, always use it regardless of config
       sale = await Sale.findById(data.saleId);
       if (!sale) {
         throw ApiError.notFound("Sale not found");
@@ -112,9 +112,28 @@ class GamingSessionService {
       if (data.customerId && sale.customer?.toString() !== data.customerId) {
         throw ApiError.badRequest("Sale customer does not match session customer");
       }
+      const sessionItem = {
+        product: pc._id,
+        productName: `Gaming Session - ${pc.pcNumber}`,
+        productSku: `SESSION-${sessionNumber}`,
+        quantity: 1,
+        unitPrice: { usd: 0, lbp: 0 },
+        subtotal: { usd: 0, lbp: 0 },
+        finalAmount: { usd: 0, lbp: 0 },
+      };
       sale.items.push(sessionItem as any);
       await sale.save();
-    } else {
+    } else if (shouldCreateSale) {
+      // Create a new sale only if shouldCreateSale is true
+      const sessionItem = {
+        product: pc._id,
+        productName: `Gaming Session - ${pc.pcNumber}`,
+        productSku: `SESSION-${sessionNumber}`,
+        quantity: 1,
+        unitPrice: { usd: 0, lbp: 0 },
+        subtotal: { usd: 0, lbp: 0 },
+        finalAmount: { usd: 0, lbp: 0 },
+      };
       const invoiceNumber = await this.generateInvoiceNumber();
       sale = await Sale.create({
         invoiceNumber,
@@ -127,6 +146,7 @@ class GamingSessionService {
         status: SaleStatus.PENDING,
       });
     }
+    // If shouldCreateSale is false and no saleId provided, sale remains null (standalone session)
 
     const session = await GamingSession.create({
       sessionNumber,
@@ -138,7 +158,7 @@ class GamingSessionService {
       totalCost: { usd: 0, lbp: 0 },
       finalAmount: { usd: 0, lbp: 0 },
       startedBy: cashierId,
-      sale: sale._id,
+      sale: sale?._id,
       notes: data.notes,
       status: SessionStatus.ACTIVE,
       paymentStatus: SessionPaymentStatus.UNPAID,
@@ -247,48 +267,51 @@ class GamingSessionService {
 
     await session.save();
 
-    const sale = await Sale.findById(session.sale);
-    if (sale) {
-      const sessionItem = sale.items.find(
-        (item) => item.productSku === `SESSION-${session.sessionNumber}`
-      );
-
-      if (sessionItem) {
-        sessionItem.unitPrice = session.totalCost;
-        sessionItem.subtotal = session.totalCost;
-        sessionItem.discount = discountData;
-        sessionItem.finalAmount = session.finalAmount;
-
-        sale.subtotalBeforeDiscount = sale.items.reduce(
-          (acc, item) => ({
-            usd: acc.usd + item.subtotal.usd,
-            lbp: acc.lbp + item.subtotal.lbp,
-          }),
-          { usd: 0, lbp: 0 }
+    // Only update the sale if the session has one (not a standalone session)
+    if (session.sale) {
+      const sale = await Sale.findById(session.sale);
+      if (sale) {
+        const sessionItem = sale.items.find(
+          (item) => item.productSku === `SESSION-${session.sessionNumber}`
         );
 
-        sale.totalItemDiscounts = sale.items.reduce(
-          (acc, item) => ({
-            usd: acc.usd + (item.discount?.amount.usd || 0),
-            lbp: acc.lbp + (item.discount?.amount.lbp || 0),
-          }),
-          { usd: 0, lbp: 0 }
-        );
+        if (sessionItem) {
+          sessionItem.unitPrice = session.totalCost;
+          sessionItem.subtotal = session.totalCost;
+          sessionItem.discount = discountData;
+          sessionItem.finalAmount = session.finalAmount;
 
-        let totals = {
-          usd: sale.subtotalBeforeDiscount.usd - sale.totalItemDiscounts.usd,
-          lbp: sale.subtotalBeforeDiscount.lbp - sale.totalItemDiscounts.lbp,
-        };
+          sale.subtotalBeforeDiscount = sale.items.reduce(
+            (acc, item) => ({
+              usd: acc.usd + item.subtotal.usd,
+              lbp: acc.lbp + item.subtotal.lbp,
+            }),
+            { usd: 0, lbp: 0 }
+          );
 
-        if (sale.saleDiscount) {
-          totals = {
-            usd: totals.usd - sale.saleDiscount.amount.usd,
-            lbp: totals.lbp - sale.saleDiscount.amount.lbp,
+          sale.totalItemDiscounts = sale.items.reduce(
+            (acc, item) => ({
+              usd: acc.usd + (item.discount?.amount.usd || 0),
+              lbp: acc.lbp + (item.discount?.amount.lbp || 0),
+            }),
+            { usd: 0, lbp: 0 }
+          );
+
+          let totals = {
+            usd: sale.subtotalBeforeDiscount.usd - sale.totalItemDiscounts.usd,
+            lbp: sale.subtotalBeforeDiscount.lbp - sale.totalItemDiscounts.lbp,
           };
-        }
 
-        sale.totals = totals;
-        await sale.save();
+          if (sale.saleDiscount) {
+            totals = {
+              usd: totals.usd - sale.saleDiscount.amount.usd,
+              lbp: totals.lbp - sale.saleDiscount.amount.lbp,
+            };
+          }
+
+          sale.totals = totals;
+          await sale.save();
+        }
       }
     }
 
@@ -343,47 +366,50 @@ class GamingSessionService {
 
       await session.save();
 
-      const sale = await Sale.findById(session.sale);
-      if (sale) {
-        const sessionItem = sale.items.find(
-          (item) => item.productSku === `SESSION-${session.sessionNumber}`
-        );
-
-        if (sessionItem) {
-          sessionItem.unitPrice = session.totalCost;
-          sessionItem.subtotal = session.totalCost;
-          sessionItem.finalAmount = session.finalAmount;
-
-          sale.subtotalBeforeDiscount = sale.items.reduce(
-            (acc, item) => ({
-              usd: acc.usd + item.subtotal.usd,
-              lbp: acc.lbp + item.subtotal.lbp,
-            }),
-            { usd: 0, lbp: 0 }
+      // Only update sale if session has one
+      if (session.sale) {
+        const sale = await Sale.findById(session.sale);
+        if (sale) {
+          const sessionItem = sale.items.find(
+            (item) => item.productSku === `SESSION-${session.sessionNumber}`
           );
 
-          sale.totalItemDiscounts = sale.items.reduce(
-            (acc, item) => ({
-              usd: acc.usd + (item.discount?.amount.usd || 0),
-              lbp: acc.lbp + (item.discount?.amount.lbp || 0),
-            }),
-            { usd: 0, lbp: 0 }
-          );
+          if (sessionItem) {
+            sessionItem.unitPrice = session.totalCost;
+            sessionItem.subtotal = session.totalCost;
+            sessionItem.finalAmount = session.finalAmount;
 
-          let totals = {
-            usd: sale.subtotalBeforeDiscount.usd - sale.totalItemDiscounts.usd,
-            lbp: sale.subtotalBeforeDiscount.lbp - sale.totalItemDiscounts.lbp,
-          };
+            sale.subtotalBeforeDiscount = sale.items.reduce(
+              (acc, item) => ({
+                usd: acc.usd + item.subtotal.usd,
+                lbp: acc.lbp + item.subtotal.lbp,
+              }),
+              { usd: 0, lbp: 0 }
+            );
 
-          if (sale.saleDiscount) {
-            totals = {
-              usd: totals.usd - sale.saleDiscount.amount.usd,
-              lbp: totals.lbp - sale.saleDiscount.amount.lbp,
+            sale.totalItemDiscounts = sale.items.reduce(
+              (acc, item) => ({
+                usd: acc.usd + (item.discount?.amount.usd || 0),
+                lbp: acc.lbp + (item.discount?.amount.lbp || 0),
+              }),
+              { usd: 0, lbp: 0 }
+            );
+
+            let totals = {
+              usd: sale.subtotalBeforeDiscount.usd - sale.totalItemDiscounts.usd,
+              lbp: sale.subtotalBeforeDiscount.lbp - sale.totalItemDiscounts.lbp,
             };
-          }
 
-          sale.totals = totals;
-          await sale.save();
+            if (sale.saleDiscount) {
+              totals = {
+                usd: totals.usd - sale.saleDiscount.amount.usd,
+                lbp: totals.lbp - sale.saleDiscount.amount.lbp,
+              };
+            }
+
+            sale.totals = totals;
+            await sale.save();
+          }
         }
       }
 
@@ -403,10 +429,38 @@ class GamingSessionService {
       throw ApiError.badRequest("Session is already paid");
     }
 
+    // Handle standalone sessions (no sale) - direct payment
     if (!session.sale) {
-      throw ApiError.badRequest("Session has no associated sale");
+      const totalInPaymentCurrency =
+        paymentData.paymentCurrency === Currency.USD
+          ? session.finalAmount.usd
+          : session.finalAmount.lbp;
+
+      if (paymentData.amount < totalInPaymentCurrency) {
+        throw ApiError.badRequest("Insufficient payment amount");
+      }
+
+      session.paymentStatus = SessionPaymentStatus.PAID;
+      await session.save();
+
+      // Update customer purchase stats for standalone session payment
+      if (session.customer) {
+        await customerService.updatePurchaseStats(
+          session.customer.toString(),
+          session.finalAmount.usd
+        );
+      }
+
+      return await session.populate([
+        "pc",
+        "customer",
+        "startedBy",
+        "endedBy",
+        "sale",
+      ]);
     }
 
+    // Handle sessions with associated sale
     const sale = await Sale.findById(session.sale);
     if (!sale) {
       throw ApiError.notFound("Associated sale not found");
@@ -613,47 +667,50 @@ class GamingSessionService {
     session.endedBy = cashierId as any;
     await session.save();
 
-    const sale = await Sale.findById(session.sale);
-    if (sale && sale.status === SaleStatus.PENDING) {
-      sale.items = sale.items.filter(
-        (item) => item.productSku !== `SESSION-${session.sessionNumber}`
-      );
-
-      if (sale.items.length === 0) {
-        sale.status = SaleStatus.CANCELLED;
-      } else {
-        sale.subtotalBeforeDiscount = sale.items.reduce(
-          (acc, item) => ({
-            usd: acc.usd + item.subtotal.usd,
-            lbp: acc.lbp + item.subtotal.lbp,
-          }),
-          { usd: 0, lbp: 0 }
+    // Only update sale if session has one (not a standalone session)
+    if (session.sale) {
+      const sale = await Sale.findById(session.sale);
+      if (sale && sale.status === SaleStatus.PENDING) {
+        sale.items = sale.items.filter(
+          (item) => item.productSku !== `SESSION-${session.sessionNumber}`
         );
 
-        sale.totalItemDiscounts = sale.items.reduce(
-          (acc, item) => ({
-            usd: acc.usd + (item.discount?.amount.usd || 0),
-            lbp: acc.lbp + (item.discount?.amount.lbp || 0),
-          }),
-          { usd: 0, lbp: 0 }
-        );
+        if (sale.items.length === 0) {
+          sale.status = SaleStatus.CANCELLED;
+        } else {
+          sale.subtotalBeforeDiscount = sale.items.reduce(
+            (acc, item) => ({
+              usd: acc.usd + item.subtotal.usd,
+              lbp: acc.lbp + item.subtotal.lbp,
+            }),
+            { usd: 0, lbp: 0 }
+          );
 
-        let totals = {
-          usd: sale.subtotalBeforeDiscount.usd - sale.totalItemDiscounts.usd,
-          lbp: sale.subtotalBeforeDiscount.lbp - sale.totalItemDiscounts.lbp,
-        };
+          sale.totalItemDiscounts = sale.items.reduce(
+            (acc, item) => ({
+              usd: acc.usd + (item.discount?.amount.usd || 0),
+              lbp: acc.lbp + (item.discount?.amount.lbp || 0),
+            }),
+            { usd: 0, lbp: 0 }
+          );
 
-        if (sale.saleDiscount) {
-          totals = {
-            usd: totals.usd - sale.saleDiscount.amount.usd,
-            lbp: totals.lbp - sale.saleDiscount.amount.lbp,
+          let totals = {
+            usd: sale.subtotalBeforeDiscount.usd - sale.totalItemDiscounts.usd,
+            lbp: sale.subtotalBeforeDiscount.lbp - sale.totalItemDiscounts.lbp,
           };
+
+          if (sale.saleDiscount) {
+            totals = {
+              usd: totals.usd - sale.saleDiscount.amount.usd,
+              lbp: totals.lbp - sale.saleDiscount.amount.lbp,
+            };
+          }
+
+          sale.totals = totals;
         }
 
-        sale.totals = totals;
+        await sale.save();
       }
-
-      await sale.save();
     }
 
     const pc = await PC.findById(session.pc);

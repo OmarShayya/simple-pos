@@ -1,37 +1,83 @@
 import Sale, { SaleStatus } from "../models/sale.model";
-import Product from "../models/product.model";
+import Product, { ProductType } from "../models/product.model";
+import Category from "../models/category.model";
 import Customer from "../models/customer.model";
 import GamingSession, {
   SessionStatus,
   SessionPaymentStatus,
 } from "../models/gamingsession.model";
 
+interface RevenueBreakdown {
+  usd: number;
+  lbp: number;
+}
+
+interface SeparatedRevenue {
+  total: RevenueBreakdown;
+  products: RevenueBreakdown;  // Physical products (non-gaming)
+  gaming: RevenueBreakdown;    // Gaming category products + gaming sessions
+}
+
 interface DailySales {
   date: string;
   totalSales: number;
-  revenue: {
-    usd: number;
-    lbp: number;
-  };
+  revenue: SeparatedRevenue;
   itemsSold: number;
+  productSales: number;   // Number of product-only sales
+  gamingSales: number;    // Number of gaming-related sales
 }
 
 interface RevenueStats {
-  totalRevenue: { usd: number; lbp: number };
+  totalRevenue: SeparatedRevenue;
   totalSales: number;
-  averageSaleValue: { usd: number; lbp: number };
+  productSales: number;
+  gamingSales: number;
+  averageSaleValue: RevenueBreakdown;
   itemsSold: number;
 }
 
 class DashboardService {
+  // Cache gaming category ID
+  private gamingCategoryId: string | null = null;
+
+  private async getGamingCategoryId(): Promise<string | null> {
+    if (this.gamingCategoryId) return this.gamingCategoryId;
+
+    const gamingCategory = await Category.findOne({
+      name: { $regex: /^gaming$/i },
+      isActive: true
+    });
+
+    if (gamingCategory) {
+      this.gamingCategoryId = gamingCategory._id.toString();
+    }
+    return this.gamingCategoryId;
+  }
+
+  private async getGamingProductIds(): Promise<Set<string>> {
+    const gamingCategoryId = await this.getGamingCategoryId();
+    if (!gamingCategoryId) return new Set();
+
+    const gamingProducts = await Product.find({
+      $or: [
+        { category: gamingCategoryId },
+        { productType: ProductType.SERVICE }
+      ],
+      isActive: true
+    }).select('_id');
+
+    return new Set(gamingProducts.map(p => p._id.toString()));
+  }
+
   async getTodayStats(): Promise<{
-    revenue: { usd: number; lbp: number };
+    revenue: SeparatedRevenue;
     totalSales: number;
     pendingSales: number;
     paidSales: number;
+    productSales: number;
+    gamingSales: number;
     itemsSold: number;
     newCustomers: number;
-    gamingRevenue: { usd: number; lbp: number };
     gamingSessions: number;
   }> {
     const today = new Date();
@@ -39,7 +85,7 @@ class DashboardService {
     const tomorrow = new Date(today);
     tomorrow.setDate(tomorrow.getDate() + 1);
 
-    const [sales, newCustomers, gamingSessions] = await Promise.all([
+    const [sales, newCustomers, gamingSessions, gamingProductIds] = await Promise.all([
       Sale.find({
         createdAt: { $gte: today, $lt: tomorrow },
         status: { $ne: SaleStatus.CANCELLED },
@@ -52,18 +98,35 @@ class DashboardService {
         status: SessionStatus.COMPLETED,
         paymentStatus: SessionPaymentStatus.PAID,
       }),
+      this.getGamingProductIds(),
     ]);
 
     const paidSales = sales.filter((s) => s.status === SaleStatus.PAID);
-    const pendingSales = sales.filter((s) => s.status === SaleStatus.PENDING);
+    const pendingSalesArr = sales.filter((s) => s.status === SaleStatus.PENDING);
 
-    const revenue = paidSales.reduce(
-      (acc, sale) => ({
-        usd: acc.usd + sale.totals.usd,
-        lbp: acc.lbp + sale.totals.lbp,
+    // Calculate separated revenue from sales
+    const salesRevenue = this.calculateSeparatedRevenue(paidSales, gamingProductIds);
+
+    // Add gaming session revenue to gaming total
+    const gamingSessionRevenue = gamingSessions.reduce(
+      (acc, session) => ({
+        usd: acc.usd + (session.finalAmount?.usd || session.totalCost?.usd || 0),
+        lbp: acc.lbp + (session.finalAmount?.lbp || session.totalCost?.lbp || 0),
       }),
       { usd: 0, lbp: 0 }
     );
+
+    const revenue: SeparatedRevenue = {
+      total: {
+        usd: salesRevenue.total.usd + gamingSessionRevenue.usd,
+        lbp: salesRevenue.total.lbp + gamingSessionRevenue.lbp,
+      },
+      products: salesRevenue.products,
+      gaming: {
+        usd: salesRevenue.gaming.usd + gamingSessionRevenue.usd,
+        lbp: salesRevenue.gaming.lbp + gamingSessionRevenue.lbp,
+      },
+    };
 
     const itemsSold = paidSales.reduce(
       (acc, sale) =>
@@ -71,63 +134,163 @@ class DashboardService {
       0
     );
 
-    const gamingRevenue = gamingSessions.reduce(
-      (acc, session) => ({
-        usd: acc.usd + (session.totalCost?.usd || 0),
-        lbp: acc.lbp + (session.totalCost?.lbp || 0),
-      }),
-      { usd: 0, lbp: 0 }
-    );
+    // Count sales by type
+    const { productSales, gamingSales } = this.countSalesByType(paidSales, gamingProductIds);
 
     return {
       revenue,
       totalSales: sales.length,
-      pendingSales: pendingSales.length,
+      pendingSales: pendingSalesArr.length,
       paidSales: paidSales.length,
+      productSales,
+      gamingSales: gamingSales + gamingSessions.length,
       itemsSold,
       newCustomers,
-      gamingRevenue,
       gamingSessions: gamingSessions.length,
     };
   }
 
+  private calculateSeparatedRevenue(
+    sales: any[],
+    gamingProductIds: Set<string>
+  ): SeparatedRevenue {
+    const result: SeparatedRevenue = {
+      total: { usd: 0, lbp: 0 },
+      products: { usd: 0, lbp: 0 },
+      gaming: { usd: 0, lbp: 0 },
+    };
+
+    for (const sale of sales) {
+      for (const item of sale.items) {
+        const isGaming = gamingProductIds.has(item.product.toString());
+        const itemRevenue = item.finalAmount || item.subtotal;
+
+        if (isGaming) {
+          result.gaming.usd += itemRevenue.usd;
+          result.gaming.lbp += itemRevenue.lbp;
+        } else {
+          result.products.usd += itemRevenue.usd;
+          result.products.lbp += itemRevenue.lbp;
+        }
+        result.total.usd += itemRevenue.usd;
+        result.total.lbp += itemRevenue.lbp;
+      }
+    }
+
+    return result;
+  }
+
+  private countSalesByType(
+    sales: any[],
+    gamingProductIds: Set<string>
+  ): { productSales: number; gamingSales: number } {
+    let productSales = 0;
+    let gamingSales = 0;
+
+    for (const sale of sales) {
+      const hasGamingItem = sale.items.some((item: any) =>
+        gamingProductIds.has(item.product.toString())
+      );
+      const hasProductItem = sale.items.some((item: any) =>
+        !gamingProductIds.has(item.product.toString())
+      );
+
+      // A sale can count as both if it has mixed items
+      if (hasProductItem) productSales++;
+      if (hasGamingItem) gamingSales++;
+    }
+
+    return { productSales, gamingSales };
+  }
+
   async getDailySales(startDate: Date, endDate: Date): Promise<DailySales[]> {
-    const sales = await Sale.aggregate([
-      {
-        $match: {
-          createdAt: { $gte: startDate, $lte: endDate },
-          status: SaleStatus.PAID,
-        },
-      },
-      {
-        $group: {
-          _id: {
-            $dateToString: { format: "%Y-%m-%d", date: "$createdAt" },
-          },
-          totalSales: { $sum: 1 },
-          revenueUsd: { $sum: "$totals.usd" },
-          revenueLbp: { $sum: "$totals.lbp" },
-          itemsSold: {
-            $sum: {
-              $sum: "$items.quantity",
-            },
-          },
-        },
-      },
-      {
-        $sort: { _id: 1 },
-      },
+    const [sales, gamingSessions, gamingProductIds] = await Promise.all([
+      Sale.find({
+        createdAt: { $gte: startDate, $lte: endDate },
+        status: SaleStatus.PAID,
+      }),
+      GamingSession.find({
+        startTime: { $gte: startDate, $lte: endDate },
+        status: SessionStatus.COMPLETED,
+        paymentStatus: SessionPaymentStatus.PAID,
+      }),
+      this.getGamingProductIds(),
     ]);
 
-    return sales.map((day) => ({
-      date: day._id,
-      totalSales: day.totalSales,
-      revenue: {
-        usd: day.revenueUsd,
-        lbp: day.revenueLbp,
-      },
-      itemsSold: day.itemsSold,
-    }));
+    // Group sales by date
+    const dailyData = new Map<string, {
+      sales: any[];
+      gamingSessions: any[];
+    }>();
+
+    // Group sales by date
+    for (const sale of sales) {
+      const date = sale.createdAt.toISOString().split('T')[0];
+      if (!dailyData.has(date)) {
+        dailyData.set(date, { sales: [], gamingSessions: [] });
+      }
+      dailyData.get(date)!.sales.push(sale);
+    }
+
+    // Group gaming sessions by date
+    for (const session of gamingSessions) {
+      const date = session.startTime.toISOString().split('T')[0];
+      if (!dailyData.has(date)) {
+        dailyData.set(date, { sales: [], gamingSessions: [] });
+      }
+      dailyData.get(date)!.gamingSessions.push(session);
+    }
+
+    // Calculate daily stats
+    const result: DailySales[] = [];
+    const sortedDates = Array.from(dailyData.keys()).sort();
+
+    for (const date of sortedDates) {
+      const dayData = dailyData.get(date)!;
+
+      // Calculate separated revenue from sales
+      const salesRevenue = this.calculateSeparatedRevenue(dayData.sales, gamingProductIds);
+
+      // Add gaming session revenue
+      const sessionRevenue = dayData.gamingSessions.reduce(
+        (acc, session) => ({
+          usd: acc.usd + (session.finalAmount?.usd || session.totalCost?.usd || 0),
+          lbp: acc.lbp + (session.finalAmount?.lbp || session.totalCost?.lbp || 0),
+        }),
+        { usd: 0, lbp: 0 }
+      );
+
+      const revenue: SeparatedRevenue = {
+        total: {
+          usd: salesRevenue.total.usd + sessionRevenue.usd,
+          lbp: salesRevenue.total.lbp + sessionRevenue.lbp,
+        },
+        products: salesRevenue.products,
+        gaming: {
+          usd: salesRevenue.gaming.usd + sessionRevenue.usd,
+          lbp: salesRevenue.gaming.lbp + sessionRevenue.lbp,
+        },
+      };
+
+      const itemsSold = dayData.sales.reduce(
+        (acc, sale) =>
+          acc + sale.items.reduce((sum: number, item: any) => sum + item.quantity, 0),
+        0
+      );
+
+      const { productSales, gamingSales } = this.countSalesByType(dayData.sales, gamingProductIds);
+
+      result.push({
+        date,
+        totalSales: dayData.sales.length + dayData.gamingSessions.length,
+        revenue,
+        itemsSold,
+        productSales,
+        gamingSales: gamingSales + dayData.gamingSessions.length,
+      });
+    }
+
+    return result;
   }
 
   async getWeeklyStats(): Promise<RevenueStats> {
@@ -157,18 +320,42 @@ class DashboardService {
     startDate: Date,
     endDate: Date
   ): Promise<RevenueStats> {
-    const sales = await Sale.find({
-      createdAt: { $gte: startDate, $lte: endDate },
-      status: SaleStatus.PAID,
-    });
+    const [sales, gamingSessions, gamingProductIds] = await Promise.all([
+      Sale.find({
+        createdAt: { $gte: startDate, $lte: endDate },
+        status: SaleStatus.PAID,
+      }),
+      GamingSession.find({
+        startTime: { $gte: startDate, $lte: endDate },
+        status: SessionStatus.COMPLETED,
+        paymentStatus: SessionPaymentStatus.PAID,
+      }),
+      this.getGamingProductIds(),
+    ]);
 
-    const totalRevenue = sales.reduce(
-      (acc, sale) => ({
-        usd: acc.usd + sale.totals.usd,
-        lbp: acc.lbp + sale.totals.lbp,
+    // Calculate separated revenue from sales
+    const salesRevenue = this.calculateSeparatedRevenue(sales, gamingProductIds);
+
+    // Add gaming session revenue
+    const sessionRevenue = gamingSessions.reduce(
+      (acc, session) => ({
+        usd: acc.usd + (session.finalAmount?.usd || session.totalCost?.usd || 0),
+        lbp: acc.lbp + (session.finalAmount?.lbp || session.totalCost?.lbp || 0),
       }),
       { usd: 0, lbp: 0 }
     );
+
+    const totalRevenue: SeparatedRevenue = {
+      total: {
+        usd: salesRevenue.total.usd + sessionRevenue.usd,
+        lbp: salesRevenue.total.lbp + sessionRevenue.lbp,
+      },
+      products: salesRevenue.products,
+      gaming: {
+        usd: salesRevenue.gaming.usd + sessionRevenue.usd,
+        lbp: salesRevenue.gaming.lbp + sessionRevenue.lbp,
+      },
+    };
 
     const itemsSold = sales.reduce(
       (acc, sale) =>
@@ -176,14 +363,17 @@ class DashboardService {
       0
     );
 
-    const totalSales = sales.length;
+    const { productSales, gamingSales } = this.countSalesByType(sales, gamingProductIds);
+    const totalSales = sales.length + gamingSessions.length;
 
     return {
       totalRevenue,
       totalSales,
+      productSales,
+      gamingSales: gamingSales + gamingSessions.length,
       averageSaleValue: {
-        usd: totalSales > 0 ? totalRevenue.usd / totalSales : 0,
-        lbp: totalSales > 0 ? totalRevenue.lbp / totalSales : 0,
+        usd: totalSales > 0 ? totalRevenue.total.usd / totalSales : 0,
+        lbp: totalSales > 0 ? totalRevenue.total.lbp / totalSales : 0,
       },
       itemsSold,
     };
@@ -250,6 +440,7 @@ class DashboardService {
   > {
     const products = await Product.find({
       isActive: true,
+      productType: ProductType.PHYSICAL,
       "inventory.isLowStock": true,
     })
       .populate("category", "name")
@@ -258,9 +449,9 @@ class DashboardService {
     return products.map((product) => ({
       id: product._id.toString(),
       name: product.name,
-      sku: product.sku,
-      currentStock: product.inventory.quantity,
-      minStockLevel: product.inventory.minStockLevel,
+      sku: product.sku || "",
+      currentStock: product.inventory?.quantity || 0,
+      minStockLevel: product.inventory?.minStockLevel || 0,
       category: (product.category as any).name,
     }));
   }
@@ -404,17 +595,20 @@ class DashboardService {
     totalInventoryValue: { usd: number; lbp: number };
     lowStockCount: number;
   }> {
-    const products = await Product.find({ isActive: true });
+    const products = await Product.find({
+      isActive: true,
+      productType: ProductType.PHYSICAL,
+    });
 
     const totalInventoryValue = products.reduce(
       (acc, product) => ({
-        usd: acc.usd + product.pricing.usd * product.inventory.quantity,
-        lbp: acc.lbp + product.pricing.lbp * product.inventory.quantity,
+        usd: acc.usd + product.pricing.usd * (product.inventory?.quantity || 0),
+        lbp: acc.lbp + product.pricing.lbp * (product.inventory?.quantity || 0),
       }),
       { usd: 0, lbp: 0 }
     );
 
-    const lowStockCount = products.filter((p) => p.inventory.isLowStock).length;
+    const lowStockCount = products.filter((p) => p.inventory?.isLowStock).length;
 
     return {
       totalProducts: products.length,

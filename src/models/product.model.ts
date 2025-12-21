@@ -1,16 +1,22 @@
 import mongoose, { Schema, Document, Types } from "mongoose";
 
+export enum ProductType {
+  PHYSICAL = "physical",
+  SERVICE = "service",
+}
+
 export interface IProduct extends Document {
   _id: Types.ObjectId;
   name: string;
   description?: string;
-  sku: string;
+  sku?: string;
   category: Types.ObjectId;
+  productType: ProductType;
   pricing: {
     usd: number;
     lbp: number;
   };
-  inventory: {
+  inventory?: {
     quantity: number;
     minStockLevel: number;
     isLowStock: boolean;
@@ -38,8 +44,8 @@ const productSchema = new Schema<IProduct>(
     },
     sku: {
       type: String,
-      required: [true, "SKU is required"],
       unique: true,
+      sparse: true,
       trim: true,
       uppercase: true,
     },
@@ -48,22 +54,26 @@ const productSchema = new Schema<IProduct>(
       ref: "Category",
       required: [true, "Category is required"],
     },
+    productType: {
+      type: String,
+      enum: Object.values(ProductType),
+      default: ProductType.PHYSICAL,
+    },
     pricing: {
       usd: {
         type: Number,
-        required: [true, "USD price is required"],
+        default: 0,
         min: [0, "Price cannot be negative"],
       },
       lbp: {
         type: Number,
-        required: [true, "LBP price is required"],
+        default: 0,
         min: [0, "Price cannot be negative"],
       },
     },
     inventory: {
       quantity: {
         type: Number,
-        required: [true, "Quantity is required"],
         min: [0, "Quantity cannot be negative"],
         default: 0,
       },
@@ -98,13 +108,15 @@ const productSchema = new Schema<IProduct>(
 productSchema.index({ name: "text", description: "text", sku: "text" });
 productSchema.index({ category: 1 });
 productSchema.index({ "inventory.isLowStock": 1 });
-productSchema.index({ sku: 1 });
 productSchema.index({ displayOnMenu: 1 });
+productSchema.index({ productType: 1 });
 
-// Update low stock status before saving
+// Update low stock status before saving (only for physical products)
 productSchema.pre("save", function (next) {
-  this.inventory.isLowStock =
-    this.inventory.quantity <= this.inventory.minStockLevel;
+  if (this.productType === ProductType.PHYSICAL && this.inventory) {
+    this.inventory.isLowStock =
+      this.inventory.quantity <= this.inventory.minStockLevel;
+  }
   next();
 });
 

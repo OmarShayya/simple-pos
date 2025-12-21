@@ -11,9 +11,19 @@ import GamingSession, {
   SessionStatus,
   SessionPaymentStatus,
 } from "../models/gamingsession.model";
+import Category from "../models/category.model";
+import Product from "../models/product.model";
 
 interface RevenueBreakdown {
   total: {
+    usd: number;
+    lbp: number;
+  };
+  products: {
+    usd: number;
+    lbp: number;
+  };
+  gaming: {
     usd: number;
     lbp: number;
   };
@@ -26,6 +36,8 @@ interface RevenueBreakdown {
     lbp: number;
   };
   totalSales: number;
+  productSales: number;
+  gamingSales: number;
   averageSale: {
     usd: number;
     lbp: number;
@@ -51,6 +63,36 @@ interface RevenueBreakdown {
 }
 
 class ReportService {
+  // Helper to get Gaming category ID
+  private async getGamingCategoryId(): Promise<string | null> {
+    const gamingCategory = await Category.findOne({
+      name: { $regex: /^gaming$/i },
+    });
+    return gamingCategory?._id.toString() || null;
+  }
+
+  // Helper to get all product IDs under Gaming category
+  private async getGamingProductIds(): Promise<Set<string>> {
+    const gamingCategoryId = await this.getGamingCategoryId();
+    if (!gamingCategoryId) return new Set();
+
+    const gamingProducts = await Product.find({ category: gamingCategoryId });
+    return new Set(gamingProducts.map((p) => p._id.toString()));
+  }
+
+  // Check if a sale item is gaming (either gaming product or gaming session)
+  private isGamingItem(
+    item: any,
+    gamingProductIds: Set<string>
+  ): boolean {
+    // Gaming sessions have productSku starting with "SESSION-"
+    if (item.productSku?.startsWith("SESSION-")) {
+      return true;
+    }
+    // Products under Gaming category
+    return gamingProductIds.has(item.product.toString());
+  }
+
   private async getRevenueBreakdown(
     startDate: Date,
     endDate: Date
@@ -59,6 +101,9 @@ class ReportService {
       createdAt: { $gte: startDate, $lte: endDate },
       status: SaleStatus.PAID,
     });
+
+    // Get gaming product IDs for categorization
+    const gamingProductIds = await this.getGamingProductIds();
 
     const usdPaymentSales = sales.filter(
       (s) => s.paymentCurrency === Currency.USD
@@ -74,6 +119,34 @@ class ReportService {
       }),
       { usd: 0, lbp: 0 }
     );
+
+    // Calculate separated revenue (products vs gaming)
+    let productsRevenue = { usd: 0, lbp: 0 };
+    let gamingRevenue = { usd: 0, lbp: 0 };
+    let productSalesCount = 0;
+    let gamingSalesCount = 0;
+
+    for (const sale of sales) {
+      let saleHasProducts = false;
+      let saleHasGaming = false;
+
+      for (const item of sale.items) {
+        const itemRevenue = item.finalAmount || item.subtotal;
+        if (this.isGamingItem(item, gamingProductIds)) {
+          gamingRevenue.usd += itemRevenue.usd;
+          gamingRevenue.lbp += itemRevenue.lbp;
+          saleHasGaming = true;
+        } else {
+          productsRevenue.usd += itemRevenue.usd;
+          productsRevenue.lbp += itemRevenue.lbp;
+          saleHasProducts = true;
+        }
+      }
+
+      // Count sales by type (a sale can be counted in both if it has both types)
+      if (saleHasProducts) productSalesCount++;
+      if (saleHasGaming) gamingSalesCount++;
+    }
 
     const usdPaymentsRevenue = usdPaymentSales.reduce(
       (acc, sale) => ({
@@ -122,9 +195,13 @@ class ReportService {
 
     return {
       total: totalRevenue,
+      products: productsRevenue,
+      gaming: gamingRevenue,
       usdPayments: usdPaymentsRevenue,
       lbpPayments: lbpPaymentsRevenue,
       totalSales,
+      productSales: productSalesCount,
+      gamingSales: gamingSalesCount,
       averageSale: {
         usd: totalSales > 0 ? totalRevenue.usd / totalSales : 0,
         lbp: totalSales > 0 ? totalRevenue.lbp / totalSales : 0,
@@ -556,53 +633,154 @@ class ReportService {
 
     const skip = (page - 1) * limit;
 
+    // Get gaming product IDs for categorization
+    const gamingProductIds = await this.getGamingProductIds();
+
     const [transactions, total] = await Promise.all([
       Sale.find(query)
         .populate("customer", "name phone")
         .populate("cashier", "name")
+        .populate("items.product", "name sku category")
         .sort({ createdAt: -1 })
         .skip(skip)
         .limit(limit),
       Sale.countDocuments(query),
     ]);
 
+    // Get all sale IDs to fetch linked gaming sessions
+    const saleIds = transactions.map((t) => t._id);
+    const gamingSessions = await GamingSession.find({
+      sale: { $in: saleIds },
+    })
+      .populate("pc", "pcNumber name")
+      .populate("customer", "name phone");
+
+    // Create a map of sale ID to gaming sessions
+    const sessionsBySaleId = new Map<string, any[]>();
+    gamingSessions.forEach((session) => {
+      const saleId = session.sale?.toString();
+      if (saleId) {
+        if (!sessionsBySaleId.has(saleId)) {
+          sessionsBySaleId.set(saleId, []);
+        }
+        sessionsBySaleId.get(saleId)!.push(session);
+      }
+    });
+
     return {
-      transactions: transactions.map((sale) => ({
-        id: sale._id.toString(),
-        invoiceNumber: sale.invoiceNumber,
-        customer: sale.customer
-          ? {
-              name: (sale.customer as any).name,
-              phone: (sale.customer as any).phone,
+      transactions: transactions.map((sale) => {
+        const saleId = sale._id.toString();
+        const linkedSessions = sessionsBySaleId.get(saleId) || [];
+
+        // Map items with full details and type categorization
+        const items = sale.items.map((item) => {
+          const isGaming = this.isGamingItem(item, gamingProductIds);
+          const isGamingSession = item.productSku?.startsWith("SESSION-");
+
+          // Find linked gaming session for this item (if it's a session)
+          let gamingSessionDetails = null;
+          if (isGamingSession && linkedSessions.length > 0) {
+            // Match by session number in SKU (e.g., SESSION-20251220-0001)
+            const sessionNumber = item.productSku?.replace("SESSION-", "");
+            const matchingSession = linkedSessions.find(
+              (s) => s.sessionNumber === sessionNumber
+            );
+            if (matchingSession) {
+              gamingSessionDetails = {
+                sessionNumber: matchingSession.sessionNumber,
+                pc: matchingSession.pc
+                  ? {
+                      pcNumber: (matchingSession.pc as any).pcNumber,
+                      name: (matchingSession.pc as any).name,
+                    }
+                  : null,
+                customerName: matchingSession.customerName,
+                startTime: matchingSession.startTime,
+                endTime: matchingSession.endTime,
+                duration: matchingSession.duration,
+                hourlyRate: matchingSession.hourlyRate,
+                status: matchingSession.status,
+              };
             }
-          : null,
-        subtotalBeforeDiscount: sale.subtotalBeforeDiscount,
-        discounts: {
-          itemDiscounts: sale.totalItemDiscounts,
-          saleDiscount: sale.saleDiscount
+          }
+
+          return {
+            productId: item.product?.toString(),
+            productName: item.productName,
+            productSku: item.productSku || null,
+            quantity: item.quantity,
+            unitPrice: item.unitPrice,
+            subtotal: item.subtotal,
+            discount: item.discount
+              ? {
+                  discountName: item.discount.discountName,
+                  percentage: item.discount.percentage,
+                  amount: item.discount.amount,
+                }
+              : null,
+            finalAmount: item.finalAmount,
+            type: isGaming ? "gaming" : "product",
+            isGamingSession,
+            gamingSessionDetails,
+          };
+        });
+
+        // Summary counts
+        const productItems = items.filter((i) => i.type === "product");
+        const gamingItems = items.filter((i) => i.type === "gaming");
+
+        return {
+          id: saleId,
+          invoiceNumber: sale.invoiceNumber,
+          customer: sale.customer
             ? {
-                name: sale.saleDiscount.discountName,
-                percentage: sale.saleDiscount.percentage,
-                amount: sale.saleDiscount.amount,
+                name: (sale.customer as any).name,
+                phone: (sale.customer as any).phone,
               }
             : null,
-          totalDiscounts: {
-            usd:
-              (sale.totalItemDiscounts?.usd || 0) +
-              (sale.saleDiscount?.amount.usd || 0),
-            lbp:
-              (sale.totalItemDiscounts?.lbp || 0) +
-              (sale.saleDiscount?.amount.lbp || 0),
+          items,
+          itemsSummary: {
+            totalItems: items.length,
+            productCount: productItems.length,
+            gamingCount: gamingItems.length,
+            productTotal: {
+              usd: productItems.reduce((sum, i) => sum + i.finalAmount.usd, 0),
+              lbp: productItems.reduce((sum, i) => sum + i.finalAmount.lbp, 0),
+            },
+            gamingTotal: {
+              usd: gamingItems.reduce((sum, i) => sum + i.finalAmount.usd, 0),
+              lbp: gamingItems.reduce((sum, i) => sum + i.finalAmount.lbp, 0),
+            },
           },
-        },
-        totals: sale.totals,
-        amountPaid: sale.amountPaid,
-        paymentMethod: sale.paymentMethod,
-        paymentCurrency: sale.paymentCurrency,
-        status: sale.status,
-        cashier: (sale.cashier as any).name,
-        createdAt: sale.createdAt,
-      })),
+          subtotalBeforeDiscount: sale.subtotalBeforeDiscount,
+          discounts: {
+            itemDiscounts: sale.totalItemDiscounts,
+            saleDiscount: sale.saleDiscount
+              ? {
+                  name: sale.saleDiscount.discountName,
+                  percentage: sale.saleDiscount.percentage,
+                  amount: sale.saleDiscount.amount,
+                }
+              : null,
+            totalDiscounts: {
+              usd:
+                (sale.totalItemDiscounts?.usd || 0) +
+                (sale.saleDiscount?.amount.usd || 0),
+              lbp:
+                (sale.totalItemDiscounts?.lbp || 0) +
+                (sale.saleDiscount?.amount.lbp || 0),
+            },
+          },
+          totals: sale.totals,
+          amountPaid: sale.amountPaid,
+          paymentMethod: sale.paymentMethod,
+          paymentCurrency: sale.paymentCurrency,
+          status: sale.status,
+          cashier: (sale.cashier as any).name,
+          createdAt: sale.createdAt,
+          notes: sale.notes || null,
+        };
+      }),
       total,
       page,
       limit,

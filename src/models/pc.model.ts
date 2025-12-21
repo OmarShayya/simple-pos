@@ -87,7 +87,6 @@ const pcSchema = new Schema<IPC>(
   }
 );
 
-pcSchema.index({ pcNumber: 1 });
 pcSchema.index({ status: 1 });
 pcSchema.index({ isActive: 1 });
 

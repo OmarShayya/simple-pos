@@ -39,6 +39,4 @@ const categorySchema = new Schema<ICategory>(
   }
 );
 
-categorySchema.index({ name: 1 });
-
 export default mongoose.model<ICategory>("Category", categorySchema);

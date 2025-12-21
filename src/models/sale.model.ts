@@ -20,7 +20,7 @@ export enum Currency {
 export interface ISaleItem {
   product: Types.ObjectId | any;
   productName: string;
-  productSku: string;
+  productSku?: string;  // Optional - service products don't have SKUs
   quantity: number;
   unitPrice: {
     usd: number;
@@ -98,7 +98,7 @@ const saleItemSchema = new Schema<ISaleItem>(
     },
     productSku: {
       type: String,
-      required: true,
+      required: false,  // Optional - service products don't have SKUs
     },
     quantity: {
       type: Number,
@@ -205,7 +205,6 @@ const saleSchema = new Schema<ISale>(
   }
 );
 
-saleSchema.index({ invoiceNumber: 1 });
 saleSchema.index({ customer: 1 });
 saleSchema.index({ status: 1 });
 saleSchema.index({ createdAt: -1 });

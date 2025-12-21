@@ -26,6 +26,7 @@ export class SaleItemDto {
   quantity!: number;
 
   @IsOptional()
+  @ValidateIf((o) => o.discountId !== "")
   @IsMongoId()
   discountId?: string;
 }
@@ -36,12 +37,14 @@ export class SessionDiscountDto {
   productSku!: string;
 
   @IsOptional()
+  @ValidateIf((o) => o.discountId !== "")
   @IsMongoId()
   discountId?: string; // Optional - if not provided, removes discount from this session
 }
 
 export class CreateSaleDto {
   @IsOptional()
+  @ValidateIf((o) => o.customerId !== "")
   @IsMongoId()
   customerId?: string;
 
@@ -53,6 +56,7 @@ export class CreateSaleDto {
   items!: SaleItemDto[];
 
   @IsOptional()
+  @ValidateIf((o) => o.saleDiscountId !== "")
   @IsMongoId()
   saleDiscountId?: string;
 

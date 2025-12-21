@@ -163,7 +163,6 @@ const gamingSessionSchema = new Schema<IGamingSession>(
   }
 );
 
-gamingSessionSchema.index({ sessionNumber: 1 });
 gamingSessionSchema.index({ pc: 1 });
 gamingSessionSchema.index({ customer: 1 });
 gamingSessionSchema.index({ status: 1 });

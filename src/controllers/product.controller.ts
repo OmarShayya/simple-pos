@@ -20,6 +20,7 @@ class ProductController {
         name: product.name,
         description: product.description,
         sku: product.sku,
+        productType: product.productType,
         category: {
           id: product.category._id.toString(),
           name: (product.category as any).name,
@@ -60,6 +61,7 @@ class ProductController {
         name: product.name,
         description: product.description,
         sku: product.sku,
+        productType: product.productType,
         category: {
           id: product.category._id.toString(),
           name: (product.category as any).name,
@@ -87,6 +89,7 @@ class ProductController {
         name: product.name,
         description: product.description,
         sku: product.sku,
+        productType: product.productType,
         category: {
           id: product.category._id.toString(),
           name: (product.category as any).name,
@@ -109,6 +112,7 @@ class ProductController {
         name: product.name,
         description: product.description,
         sku: product.sku,
+        productType: product.productType,
         category: {
           id: product.category._id.toString(),
           name: (product.category as any).name,
@@ -135,6 +139,7 @@ class ProductController {
         name: product.name,
         description: product.description,
         sku: product.sku,
+        productType: product.productType,
         category: {
           id: product.category._id.toString(),
           name: (product.category as any).name,
@@ -160,6 +165,7 @@ class ProductController {
         name: product.name,
         description: product.description,
         sku: product.sku,
+        productType: product.productType,
         category: {
           id: product.category._id.toString(),
           name: (product.category as any).name,
@@ -185,6 +191,7 @@ class ProductController {
         id: product._id.toString(),
         name: product.name,
         sku: product.sku,
+        productType: product.productType,
         inventory: product.inventory,
       },
       "Stock updated successfully"
@@ -210,6 +217,7 @@ class ProductController {
         id: product._id.toString(),
         name: product.name,
         sku: product.sku,
+        productType: product.productType,
         category: (product.category as any).name,
         inventory: product.inventory,
       })),

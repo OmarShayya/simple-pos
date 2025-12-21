@@ -8,10 +8,16 @@ import {
   MaxLength,
   MinLength,
   IsMongoId,
-  IsUrl,
   ValidateNested,
+  IsEnum,
 } from "class-validator";
 import { Type } from "class-transformer";
+
+// Product types enum (must match the model)
+export enum ProductType {
+  PHYSICAL = "physical",
+  SERVICE = "service",
+}
 
 class PricingDto {
   @IsNotEmpty()
@@ -49,28 +55,36 @@ export class CreateProductDto {
   @MaxLength(500)
   description?: string;
 
-  @IsNotEmpty()
+  // SKU is optional - required only for physical products (validated in service)
+  @IsOptional()
   @IsString()
   @MinLength(2)
   @MaxLength(50)
-  sku!: string;
+  sku?: string;
 
   @IsNotEmpty()
   @IsMongoId()
   category!: string;
 
-  @IsNotEmpty()
+  // Product type - defaults to physical
+  @IsOptional()
+  @IsEnum(ProductType, { message: "productType must be either 'physical' or 'service'" })
+  productType?: ProductType;
+
+  // Pricing is optional - required only for physical products (validated in service)
+  @IsOptional()
   @ValidateNested()
   @Type(() => PricingDto)
-  pricing!: PricingDto;
+  pricing?: PricingDto;
 
-  @IsNotEmpty()
+  // Inventory is optional - only for physical products
+  @IsOptional()
   @ValidateNested()
   @Type(() => InventoryDto)
-  inventory!: InventoryDto;
+  inventory?: InventoryDto;
 
   @IsOptional()
-  @IsUrl()
+  @IsString()
   image?: string;
 
   @IsOptional()
@@ -95,6 +109,10 @@ export class UpdateProductDto {
   category?: string;
 
   @IsOptional()
+  @IsEnum(ProductType, { message: "productType must be either 'physical' or 'service'" })
+  productType?: ProductType;
+
+  @IsOptional()
   @ValidateNested()
   @Type(() => PricingDto)
   pricing?: PricingDto;
@@ -105,7 +123,7 @@ export class UpdateProductDto {
   inventory?: InventoryDto;
 
   @IsOptional()
-  @IsUrl()
+  @IsString()
   image?: string;
 
   @IsOptional()

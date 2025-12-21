@@ -85,6 +85,5 @@ const customerSchema = new Schema<ICustomer>(
 
 customerSchema.index({ name: "text", email: "text", phone: "text" });
 customerSchema.index({ phone: 1 });
-customerSchema.index({ email: 1 });
 
 export default mongoose.model<ICustomer>("Customer", customerSchema);

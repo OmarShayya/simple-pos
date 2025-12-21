@@ -4,7 +4,7 @@ import Sale, {
   PaymentMethod,
   Currency,
 } from "../models/sale.model";
-import Product from "../models/product.model";
+import Product, { ProductType } from "../models/product.model";
 import Customer from "../models/customer.model";
 import GamingSession, {
   SessionPaymentStatus,
@@ -63,10 +63,13 @@ class SaleService {
       items.map(async (item) => {
         const product = await productService.getProductById(item.productId);
 
-        if (product.inventory.quantity < item.quantity) {
-          throw ApiError.badRequest(
-            `Insufficient stock for ${product.name}. Available: ${product.inventory.quantity}`
-          );
+        // Only check stock for physical products
+        if (product.productType === ProductType.PHYSICAL && product.inventory) {
+          if (product.inventory.quantity < item.quantity) {
+            throw ApiError.badRequest(
+              `Insufficient stock for ${product.name}. Available: ${product.inventory.quantity}`
+            );
+          }
         }
 
         const subtotal = {
@@ -180,10 +183,10 @@ class SaleService {
     // Handle items update - including empty array to remove all product items
     if (data.items !== undefined) {
       const sessionItems = sale.items.filter((item) =>
-        item.productSku.startsWith("SESSION-")
+        item.productSku?.startsWith("SESSION-")
       );
       const productItems = sale.items.filter(
-        (item) => !item.productSku.startsWith("SESSION-")
+        (item) => !item.productSku?.startsWith("SESSION-")
       );
 
       // Restore stock for old product items
@@ -220,7 +223,7 @@ class SaleService {
           );
         }
 
-        if (!sessionItem.productSku.startsWith("SESSION-")) {
+        if (!sessionItem.productSku?.startsWith("SESSION-")) {
           throw ApiError.badRequest(
             `Item ${sessionDiscount.productSku} is not a gaming session`
           );
@@ -631,7 +634,7 @@ class SaleService {
           finalAmount: item.finalAmount,
         };
 
-        if (item.productSku.startsWith("SESSION-")) {
+        if (item.productSku?.startsWith("SESSION-")) {
           const sessionNumber = item.productSku.replace("SESSION-", "");
           const session = await GamingSession.findOne({ sessionNumber }).populate("pc");
 
@@ -888,7 +891,7 @@ class SaleService {
     }
 
     for (const item of sale.items) {
-      if (!item.productSku.startsWith("SESSION-")) {
+      if (!item.productSku?.startsWith("SESSION-")) {
         await productService.updateStock(item.product.toString(), item.quantity);
       }
     }

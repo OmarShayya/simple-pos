@@ -18,6 +18,9 @@ interface Config {
     default: string;
     exchangeRate: number;
   };
+  gaming: {
+    autoCreateSale: boolean; // If true, gaming sessions auto-create a sale. If false, sessions are standalone.
+  };
 }
 
 const config: Config = {
@@ -34,6 +37,9 @@ const config: Config = {
   currency: {
     default: process.env.DEFAULT_CURRENCY || "USD",
     exchangeRate: parseFloat(process.env.EXCHANGE_RATE_USD_TO_LBP || "89500"),
+  },
+  gaming: {
+    autoCreateSale: process.env.GAMING_AUTO_CREATE_SALE !== "false", // Defaults to true
   },
 };
 
