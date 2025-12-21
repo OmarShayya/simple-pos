@@ -5,6 +5,7 @@ import GamingSession, {
 } from "../models/gamingsession.model";
 import { ApiError } from "../utils/apiError";
 import config from "../config/config";
+import socketService from "./socket.service";
 
 interface PCFilters {
   status?: PCStatus;
@@ -221,6 +222,9 @@ class PCService {
     pc.status = PCStatus.OCCUPIED;
     await pc.save();
 
+    // Send unlock command to the physical PC (so user can play)
+    socketService.unlockPC(pc.pcNumber);
+
     return pc;
   }
 
@@ -259,6 +263,9 @@ class PCService {
     // Update PC status
     pc.status = PCStatus.AVAILABLE;
     await pc.save();
+
+    // Send lock command to the physical PC (session ended)
+    socketService.lockPC(pc.pcNumber);
 
     return pc;
   }
