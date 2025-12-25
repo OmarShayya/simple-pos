@@ -15,6 +15,7 @@ import Discount, { DiscountTarget } from "../models/discount.model";
 import { ApiError } from "../utils/apiError";
 import socketService from "./socket.service";
 import config from "../config/config";
+import logger from "../utils/logger";
 
 interface SessionFilters {
   status?: SessionStatus;
@@ -167,7 +168,22 @@ class GamingSessionService {
     pc.status = PCStatus.OCCUPIED;
     await pc.save();
 
-    socketService.unlockPC(pc.pcNumber);
+    logger.info("[GAMING SESSION] ========================================");
+    logger.info("[GAMING SESSION] SESSION STARTED");
+    logger.info(`[GAMING SESSION] Session Number: ${session.sessionNumber}`);
+    logger.info(`[GAMING SESSION] PC ID (MongoDB): ${pc._id}`);
+    logger.info(`[GAMING SESSION] PC Number: ${pc.pcNumber}`);
+    logger.info(`[GAMING SESSION] PC Name: ${pc.name}`);
+    logger.info(`[GAMING SESSION] Customer: ${data.customerName || "Walk-in"}`);
+    logger.info(`[GAMING SESSION] Hourly Rate: $${pc.hourlyRate.usd} / ${pc.hourlyRate.lbp} LBP`);
+    logger.info(`[GAMING SESSION] Sale Created: ${sale ? "Yes (ID: " + sale._id + ")" : "No (standalone)"}`);
+    logger.info("[GAMING SESSION] ----------------------------------------");
+    logger.info(`[GAMING SESSION] Calling socketService.unlockPC("${pc.pcNumber}")...`);
+
+    const unlockResult = socketService.unlockPC(pc.pcNumber);
+
+    logger.info(`[GAMING SESSION] Socket unlock result: ${unlockResult ? "SUCCESS" : "FAILED"}`);
+    logger.info("[GAMING SESSION] ========================================");
 
     return await session.populate(["pc", "customer", "startedBy", "sale"]);
   }
@@ -320,7 +336,21 @@ class GamingSessionService {
       pc.status = PCStatus.AVAILABLE;
       await pc.save();
 
-      socketService.lockPC(pc.pcNumber);
+      logger.info("[GAMING SESSION] ========================================");
+      logger.info("[GAMING SESSION] SESSION ENDED");
+      logger.info(`[GAMING SESSION] Session Number: ${session.sessionNumber}`);
+      logger.info(`[GAMING SESSION] PC Number: ${pc.pcNumber}`);
+      logger.info(`[GAMING SESSION] Duration: ${session.duration} minutes`);
+      logger.info(`[GAMING SESSION] Total Cost: $${session.totalCost.usd} / ${session.totalCost.lbp} LBP`);
+      logger.info(`[GAMING SESSION] Final Amount: $${session.finalAmount.usd} / ${session.finalAmount.lbp} LBP`);
+      logger.info(`[GAMING SESSION] Discount Applied: ${session.discount ? session.discount.discountName + " (" + session.discount.percentage + "%)" : "None"}`);
+      logger.info("[GAMING SESSION] ----------------------------------------");
+      logger.info(`[GAMING SESSION] Calling socketService.lockPC("${pc.pcNumber}")...`);
+
+      const lockResult = socketService.lockPC(pc.pcNumber);
+
+      logger.info(`[GAMING SESSION] Socket lock result: ${lockResult ? "SUCCESS" : "FAILED"}`);
+      logger.info("[GAMING SESSION] ========================================");
     }
 
     return await session.populate([
@@ -417,7 +447,19 @@ class GamingSessionService {
       if (pc) {
         pc.status = PCStatus.AVAILABLE;
         await pc.save();
-        socketService.lockPC(pc.pcNumber);
+
+        logger.info("[GAMING SESSION] ========================================");
+        logger.info("[GAMING SESSION] SESSION ENDED VIA PAYMENT (was active)");
+        logger.info(`[GAMING SESSION] Session Number: ${session.sessionNumber}`);
+        logger.info(`[GAMING SESSION] PC Number: ${pc.pcNumber}`);
+        logger.info(`[GAMING SESSION] Duration: ${session.duration} minutes`);
+        logger.info("[GAMING SESSION] ----------------------------------------");
+        logger.info(`[GAMING SESSION] Calling socketService.lockPC("${pc.pcNumber}")...`);
+
+        const lockResult = socketService.lockPC(pc.pcNumber);
+
+        logger.info(`[GAMING SESSION] Socket lock result: ${lockResult ? "SUCCESS" : "FAILED"}`);
+        logger.info("[GAMING SESSION] ========================================");
       }
     }
 
@@ -718,7 +760,17 @@ class GamingSessionService {
       pc.status = PCStatus.AVAILABLE;
       await pc.save();
 
-      socketService.lockPC(pc.pcNumber);
+      logger.info("[GAMING SESSION] ========================================");
+      logger.info("[GAMING SESSION] SESSION CANCELLED");
+      logger.info(`[GAMING SESSION] Session Number: ${session.sessionNumber}`);
+      logger.info(`[GAMING SESSION] PC Number: ${pc.pcNumber}`);
+      logger.info("[GAMING SESSION] ----------------------------------------");
+      logger.info(`[GAMING SESSION] Calling socketService.lockPC("${pc.pcNumber}")...`);
+
+      const lockResult = socketService.lockPC(pc.pcNumber);
+
+      logger.info(`[GAMING SESSION] Socket lock result: ${lockResult ? "SUCCESS" : "FAILED"}`);
+      logger.info("[GAMING SESSION] ========================================");
     }
 
     return await session.populate(["pc", "customer", "startedBy", "endedBy"]);

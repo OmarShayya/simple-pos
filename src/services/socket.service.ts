@@ -34,68 +34,136 @@ class SocketService {
       },
     });
 
+    logger.info("[SOCKET] ========================================");
+    logger.info("[SOCKET] Socket.io server initializing...");
+    logger.info("[SOCKET] ========================================");
+
     this.io.on("connection", (socket: Socket) => {
-      logger.info(`Client connected: ${socket.id}`);
+      logger.info("[SOCKET] ----------------------------------------");
+      logger.info(`[SOCKET] NEW CONNECTION`);
+      logger.info(`[SOCKET] Socket ID: ${socket.id}`);
+      logger.info(`[SOCKET] Remote Address: ${socket.handshake.address}`);
+      logger.info(`[SOCKET] Connected PCs before: ${this.connectedPCs.size}`);
+      logger.info("[SOCKET] ----------------------------------------");
 
       socket.on("register", (data: PCRegistration) => {
-        logger.info(`PC registered: ${data.pcId}`);
+        logger.info("[SOCKET] ========== PC REGISTRATION ==========");
+        logger.info(`[SOCKET] PC ID: ${data.pcId}`);
+        logger.info(`[SOCKET] Initial Status: ${data.status}`);
+        logger.info(`[SOCKET] Socket ID: ${socket.id}`);
+
         this.connectedPCs.set(data.pcId, {
           socketId: socket.id,
           status: data.status,
           lastSeen: new Date(),
         });
-        logger.info(`Total PCs connected: ${this.connectedPCs.size}`);
+
+        logger.info(`[SOCKET] Registration SUCCESS`);
+        logger.info(`[SOCKET] Total PCs now connected: ${this.connectedPCs.size}`);
+        logger.info(`[SOCKET] All connected PCs: ${JSON.stringify(Array.from(this.connectedPCs.keys()))}`);
+        logger.info("[SOCKET] ======================================");
       });
 
       socket.on("statusUpdate", (data: StatusUpdate) => {
+        logger.info("[SOCKET] ----- STATUS UPDATE -----");
+        logger.info(`[SOCKET] PC ID: ${data.pcId}`);
+        logger.info(`[SOCKET] New Status: ${data.status}`);
+
         const pc = this.connectedPCs.get(data.pcId);
         if (pc) {
+          const oldStatus = pc.status;
           pc.status = data.status;
           pc.lastSeen = new Date();
-          logger.info(`${data.pcId} status: ${data.status}`);
+          logger.info(`[SOCKET] Status changed: ${oldStatus} -> ${data.status}`);
+        } else {
+          logger.warn(`[SOCKET] PC ${data.pcId} not found in connected PCs!`);
         }
+        logger.info("[SOCKET] ----------------------------");
       });
 
       socket.on("unlockRequest", (data: UnlockRequest) => {
-        logger.info(`Unlock requested by ${data.pcId}`);
+        logger.info("[SOCKET] !!!!! UNLOCK REQUEST !!!!!");
+        logger.info(`[SOCKET] Requested by PC: ${data.pcId}`);
+        logger.info(`[SOCKET] Sending unlock event back...`);
         socket.emit("unlock");
+        logger.info("[SOCKET] Unlock event sent");
+        logger.info("[SOCKET] !!!!!!!!!!!!!!!!!!!!!!!!!!");
       });
 
       socket.on("disconnect", () => {
-        logger.info(`Client disconnected: ${socket.id}`);
+        logger.info("[SOCKET] ========== DISCONNECT ==========");
+        logger.info(`[SOCKET] Socket ID: ${socket.id}`);
 
+        let disconnectedPcId: string | null = null;
         for (const [pcId, data] of this.connectedPCs.entries()) {
           if (data.socketId === socket.id) {
+            disconnectedPcId = pcId;
             this.connectedPCs.delete(pcId);
-            logger.info(`PC ${pcId} removed. Total: ${this.connectedPCs.size}`);
             break;
           }
         }
+
+        if (disconnectedPcId) {
+          logger.info(`[SOCKET] PC ${disconnectedPcId} disconnected and removed`);
+        } else {
+          logger.info(`[SOCKET] Unknown client disconnected (not a registered PC)`);
+        }
+        logger.info(`[SOCKET] Remaining PCs: ${this.connectedPCs.size}`);
+        logger.info(`[SOCKET] Connected PCs: ${JSON.stringify(Array.from(this.connectedPCs.keys()))}`);
+        logger.info("[SOCKET] ===================================");
       });
     });
 
-    logger.info("Socket.io initialized");
+    logger.info("[SOCKET] Socket.io server initialized and listening");
   }
 
   lockPC(pcId: string): boolean {
+    logger.info("[SOCKET] ########## LOCK PC ##########");
+    logger.info(`[SOCKET] Target PC ID: ${pcId}`);
+    logger.info(`[SOCKET] Currently connected PCs: ${JSON.stringify(Array.from(this.connectedPCs.keys()))}`);
+
     const pc = this.connectedPCs.get(pcId);
     if (pc && this.io) {
-      this.io.to(pc.socketId).emit("lock");
-      logger.info(`LOCK command sent to ${pcId}`);
+      logger.info(`[SOCKET] PC found in connected list`);
+      logger.info(`[SOCKET] Socket ID: ${pc.socketId}`);
+      logger.info(`[SOCKET] Current status: ${pc.status}`);
+      logger.info(`[SOCKET] Emitting 'lock' event...`);
+
+      this.io.to(pc.socketId).emit("lock", { pcId, command: "lock", timestamp: new Date().toISOString() });
+
+      logger.info(`[SOCKET] LOCK command SENT successfully to ${pcId}`);
+      logger.info("[SOCKET] ##################################");
       return true;
     }
-    logger.warn(`PC ${pcId} not found in connected PCs`);
+
+    logger.error(`[SOCKET] FAILED - PC ${pcId} NOT FOUND in connected PCs!`);
+    logger.error(`[SOCKET] Available PCs: ${JSON.stringify(Array.from(this.connectedPCs.keys()))}`);
+    logger.info("[SOCKET] ##################################");
     return false;
   }
 
   unlockPC(pcId: string): boolean {
+    logger.info("[SOCKET] ########## UNLOCK PC ##########");
+    logger.info(`[SOCKET] Target PC ID: ${pcId}`);
+    logger.info(`[SOCKET] Currently connected PCs: ${JSON.stringify(Array.from(this.connectedPCs.keys()))}`);
+
     const pc = this.connectedPCs.get(pcId);
     if (pc && this.io) {
-      this.io.to(pc.socketId).emit("unlock");
-      logger.info(`UNLOCK command sent to ${pcId}`);
+      logger.info(`[SOCKET] PC found in connected list`);
+      logger.info(`[SOCKET] Socket ID: ${pc.socketId}`);
+      logger.info(`[SOCKET] Current status: ${pc.status}`);
+      logger.info(`[SOCKET] Emitting 'unlock' event...`);
+
+      this.io.to(pc.socketId).emit("unlock", { pcId, command: "unlock", timestamp: new Date().toISOString() });
+
+      logger.info(`[SOCKET] UNLOCK command SENT successfully to ${pcId}`);
+      logger.info("[SOCKET] ####################################");
       return true;
     }
-    logger.warn(`PC ${pcId} not found in connected PCs`);
+
+    logger.error(`[SOCKET] FAILED - PC ${pcId} NOT FOUND in connected PCs!`);
+    logger.error(`[SOCKET] Available PCs: ${JSON.stringify(Array.from(this.connectedPCs.keys()))}`);
+    logger.info("[SOCKET] ####################################");
     return false;
   }
 
