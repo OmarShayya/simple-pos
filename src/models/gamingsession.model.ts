@@ -44,6 +44,7 @@ export interface IGamingSession extends Document {
   };
   status: SessionStatus;
   paymentStatus: SessionPaymentStatus;
+  isBillable: boolean; // false = quick mode, won't show in reports
   sale?: Types.ObjectId;
   startedBy: Types.ObjectId | any;
   endedBy?: Types.ObjectId | any;
@@ -139,6 +140,10 @@ const gamingSessionSchema = new Schema<IGamingSession>(
       enum: Object.values(SessionPaymentStatus),
       default: SessionPaymentStatus.UNPAID,
     },
+    isBillable: {
+      type: Boolean,
+      default: true, // Normal sessions are billable, quick mode sessions are not
+    },
     sale: {
       type: Schema.Types.ObjectId,
       ref: "Sale",
@@ -168,6 +173,7 @@ gamingSessionSchema.index({ customer: 1 });
 gamingSessionSchema.index({ status: 1 });
 gamingSessionSchema.index({ startTime: -1 });
 gamingSessionSchema.index({ paymentStatus: 1 });
+gamingSessionSchema.index({ isBillable: 1 });
 
 export default mongoose.model<IGamingSession>(
   "GamingSession",

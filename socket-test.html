@@ -1,0 +1,342 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>PC Socket Test Client</title>
+  <script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
+  <style>
+    * {
+      box-sizing: border-box;
+      font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+    }
+    body {
+      margin: 0;
+      padding: 20px;
+      background: #1a1a2e;
+      color: #eee;
+      min-height: 100vh;
+    }
+    .container {
+      max-width: 800px;
+      margin: 0 auto;
+    }
+    h1 {
+      color: #00d4ff;
+      text-align: center;
+    }
+    .status-card {
+      background: #16213e;
+      border-radius: 12px;
+      padding: 20px;
+      margin-bottom: 20px;
+      border: 2px solid #0f3460;
+    }
+    .status-indicator {
+      display: inline-block;
+      width: 15px;
+      height: 15px;
+      border-radius: 50%;
+      margin-right: 10px;
+      animation: pulse 2s infinite;
+    }
+    .status-indicator.connected { background: #00ff88; }
+    .status-indicator.disconnected { background: #ff4444; }
+    .status-indicator.locked { background: #ff6b6b; }
+    .status-indicator.unlocked { background: #4ecdc4; }
+
+    @keyframes pulse {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.5; }
+    }
+
+    .config-section {
+      display: flex;
+      gap: 10px;
+      margin-bottom: 20px;
+      flex-wrap: wrap;
+    }
+    input, button {
+      padding: 12px 16px;
+      border-radius: 8px;
+      border: none;
+      font-size: 14px;
+    }
+    input {
+      background: #0f3460;
+      color: #fff;
+      flex: 1;
+      min-width: 150px;
+    }
+    input:focus {
+      outline: 2px solid #00d4ff;
+    }
+    button {
+      background: #00d4ff;
+      color: #1a1a2e;
+      cursor: pointer;
+      font-weight: bold;
+      transition: all 0.3s;
+    }
+    button:hover {
+      background: #00a8cc;
+      transform: translateY(-2px);
+    }
+    button:disabled {
+      background: #555;
+      cursor: not-allowed;
+      transform: none;
+    }
+    button.disconnect {
+      background: #ff4444;
+    }
+    button.disconnect:hover {
+      background: #cc3333;
+    }
+
+    .pc-status {
+      font-size: 48px;
+      text-align: center;
+      padding: 40px;
+      border-radius: 12px;
+      margin: 20px 0;
+      transition: all 0.5s;
+    }
+    .pc-status.locked {
+      background: linear-gradient(135deg, #ff4444, #cc0000);
+      box-shadow: 0 0 30px rgba(255, 68, 68, 0.5);
+    }
+    .pc-status.unlocked {
+      background: linear-gradient(135deg, #00ff88, #00cc6a);
+      box-shadow: 0 0 30px rgba(0, 255, 136, 0.5);
+    }
+
+    .log-container {
+      background: #0d1b2a;
+      border-radius: 12px;
+      padding: 15px;
+      height: 300px;
+      overflow-y: auto;
+      font-family: 'Courier New', monospace;
+      font-size: 12px;
+    }
+    .log-entry {
+      padding: 5px 0;
+      border-bottom: 1px solid #1a1a2e;
+    }
+    .log-entry.info { color: #00d4ff; }
+    .log-entry.success { color: #00ff88; }
+    .log-entry.error { color: #ff4444; }
+    .log-entry.warning { color: #ffaa00; }
+    .log-entry.event { color: #ff6bff; }
+
+    .timestamp {
+      color: #666;
+      margin-right: 10px;
+    }
+
+    .section-title {
+      color: #00d4ff;
+      margin: 20px 0 10px;
+      font-size: 14px;
+      text-transform: uppercase;
+      letter-spacing: 2px;
+    }
+
+    .payload-display {
+      background: #0d1b2a;
+      padding: 15px;
+      border-radius: 8px;
+      font-family: 'Courier New', monospace;
+      font-size: 12px;
+      white-space: pre-wrap;
+      word-break: break-all;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>PC Socket Test Client</h1>
+
+    <div class="status-card">
+      <h3>Connection Settings</h3>
+      <div class="config-section">
+        <input type="text" id="serverUrl" value="https://simple-pos-6be8.onrender.com" placeholder="Server URL">
+        <input type="text" id="pcId" value="PC-001" placeholder="PC ID (e.g., PC-001)">
+        <button id="connectBtn" onclick="connect()">Connect</button>
+        <button id="disconnectBtn" class="disconnect" onclick="disconnect()" disabled>Disconnect</button>
+      </div>
+      <div>
+        <span class="status-indicator disconnected" id="connectionIndicator"></span>
+        <span id="connectionStatus">Disconnected</span>
+      </div>
+    </div>
+
+    <div class="pc-status locked" id="pcStatus">
+      LOCKED
+    </div>
+
+    <div class="status-card">
+      <h3>Last Received Payload</h3>
+      <div class="payload-display" id="lastPayload">No events received yet...</div>
+    </div>
+
+    <div class="status-card">
+      <p class="section-title">Event Log</p>
+      <div class="log-container" id="logContainer"></div>
+    </div>
+  </div>
+
+  <script>
+    let socket = null;
+    let currentPcId = 'PC-001';
+    let currentStatus = 'locked';
+
+    function log(message, type = 'info') {
+      const logContainer = document.getElementById('logContainer');
+      const timestamp = new Date().toLocaleTimeString();
+      const entry = document.createElement('div');
+      entry.className = `log-entry ${type}`;
+      entry.innerHTML = `<span class="timestamp">[${timestamp}]</span>${message}`;
+      logContainer.insertBefore(entry, logContainer.firstChild);
+    }
+
+    function updateConnectionStatus(connected) {
+      const indicator = document.getElementById('connectionIndicator');
+      const status = document.getElementById('connectionStatus');
+      const connectBtn = document.getElementById('connectBtn');
+      const disconnectBtn = document.getElementById('disconnectBtn');
+
+      if (connected) {
+        indicator.className = 'status-indicator connected';
+        status.textContent = `Connected as ${currentPcId}`;
+        connectBtn.disabled = true;
+        disconnectBtn.disabled = false;
+      } else {
+        indicator.className = 'status-indicator disconnected';
+        status.textContent = 'Disconnected';
+        connectBtn.disabled = false;
+        disconnectBtn.disabled = true;
+      }
+    }
+
+    function updatePcStatus(locked) {
+      const pcStatus = document.getElementById('pcStatus');
+      currentStatus = locked ? 'locked' : 'unlocked';
+
+      if (locked) {
+        pcStatus.className = 'pc-status locked';
+        pcStatus.textContent = 'LOCKED';
+      } else {
+        pcStatus.className = 'pc-status unlocked';
+        pcStatus.textContent = 'UNLOCKED';
+      }
+    }
+
+    function connect() {
+      const serverUrl = document.getElementById('serverUrl').value;
+      currentPcId = document.getElementById('pcId').value;
+
+      log(`Connecting to ${serverUrl}...`, 'info');
+
+      socket = io(serverUrl, {
+        transports: ['websocket', 'polling'],
+        reconnection: true,
+        reconnectionAttempts: 5,
+        reconnectionDelay: 1000,
+      });
+
+      // Connection established
+      socket.on('connect', () => {
+        log(`Connected! Socket ID: ${socket.id}`, 'success');
+        updateConnectionStatus(true);
+
+        // Register this PC with the server
+        const registrationData = {
+          pcId: currentPcId,
+          status: currentStatus
+        };
+
+        log(`Registering as ${currentPcId} with status: ${currentStatus}`, 'info');
+        log(`Registration payload: ${JSON.stringify(registrationData)}`, 'info');
+
+        socket.emit('register', registrationData);
+        log('Registration sent!', 'success');
+      });
+
+      // Listen for LOCK command
+      socket.on('lock', (data) => {
+        log('========== LOCK EVENT RECEIVED ==========', 'event');
+        log(`Payload: ${JSON.stringify(data || 'no payload')}`, 'event');
+
+        document.getElementById('lastPayload').textContent =
+          `Event: LOCK\nTimestamp: ${new Date().toISOString()}\nPayload: ${JSON.stringify(data, null, 2) || 'none'}`;
+
+        updatePcStatus(true);
+
+        // Send status update back to server
+        socket.emit('statusUpdate', {
+          pcId: currentPcId,
+          status: 'locked'
+        });
+        log('Status update sent: locked', 'info');
+        log('==========================================', 'event');
+      });
+
+      // Listen for UNLOCK command
+      socket.on('unlock', (data) => {
+        log('========== UNLOCK EVENT RECEIVED ==========', 'event');
+        log(`Payload: ${JSON.stringify(data || 'no payload')}`, 'event');
+
+        document.getElementById('lastPayload').textContent =
+          `Event: UNLOCK\nTimestamp: ${new Date().toISOString()}\nPayload: ${JSON.stringify(data, null, 2) || 'none'}`;
+
+        updatePcStatus(false);
+
+        // Send status update back to server
+        socket.emit('statusUpdate', {
+          pcId: currentPcId,
+          status: 'unlocked'
+        });
+        log('Status update sent: unlocked', 'info');
+        log('============================================', 'event');
+      });
+
+      // Connection error
+      socket.on('connect_error', (error) => {
+        log(`Connection error: ${error.message}`, 'error');
+      });
+
+      // Disconnected
+      socket.on('disconnect', (reason) => {
+        log(`Disconnected: ${reason}`, 'warning');
+        updateConnectionStatus(false);
+      });
+
+      // Reconnecting
+      socket.on('reconnect_attempt', (attemptNumber) => {
+        log(`Reconnection attempt ${attemptNumber}...`, 'warning');
+      });
+
+      // Reconnected
+      socket.on('reconnect', () => {
+        log('Reconnected!', 'success');
+      });
+    }
+
+    function disconnect() {
+      if (socket) {
+        log('Disconnecting...', 'info');
+        socket.disconnect();
+        socket = null;
+        updateConnectionStatus(false);
+        log('Disconnected manually', 'warning');
+      }
+    }
+
+    // Log initial state
+    log('Socket Test Client initialized', 'info');
+    log('Enter your PC ID (must match database pcNumber) and click Connect', 'info');
+  </script>
+</body>
+</html>

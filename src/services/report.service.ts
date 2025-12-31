@@ -97,6 +97,7 @@ class ReportService {
     startDate: Date,
     endDate: Date
   ): Promise<RevenueBreakdown> {
+    // Only include PAID sales in reports
     const sales = await Sale.find({
       createdAt: { $gte: startDate, $lte: endDate },
       status: SaleStatus.PAID,
@@ -112,15 +113,7 @@ class ReportService {
       (s) => s.paymentCurrency === Currency.LBP
     );
 
-    const totalRevenue = sales.reduce(
-      (acc, sale) => ({
-        usd: acc.usd + sale.amountPaid.usd,
-        lbp: acc.lbp + sale.amountPaid.lbp,
-      }),
-      { usd: 0, lbp: 0 }
-    );
-
-    // Calculate separated revenue (products vs gaming)
+    // Calculate separated revenue (products vs gaming) from item-level data
     let productsRevenue = { usd: 0, lbp: 0 };
     let gamingRevenue = { usd: 0, lbp: 0 };
     let productSalesCount = 0;
@@ -129,24 +122,64 @@ class ReportService {
     for (const sale of sales) {
       let saleHasProducts = false;
       let saleHasGaming = false;
+      let saleProductsTotal = { usd: 0, lbp: 0 };
+      let saleGamingTotal = { usd: 0, lbp: 0 };
 
+      // Calculate item totals for this sale
       for (const item of sale.items) {
         const itemRevenue = item.finalAmount || item.subtotal;
         if (this.isGamingItem(item, gamingProductIds)) {
-          gamingRevenue.usd += itemRevenue.usd;
-          gamingRevenue.lbp += itemRevenue.lbp;
+          saleGamingTotal.usd += itemRevenue.usd;
+          saleGamingTotal.lbp += itemRevenue.lbp;
           saleHasGaming = true;
         } else {
-          productsRevenue.usd += itemRevenue.usd;
-          productsRevenue.lbp += itemRevenue.lbp;
+          saleProductsTotal.usd += itemRevenue.usd;
+          saleProductsTotal.lbp += itemRevenue.lbp;
           saleHasProducts = true;
         }
       }
 
-      // Count sales by type (a sale can be counted in both if it has both types)
+      // If there's a sale-level discount, distribute it proportionally
+      if (sale.saleDiscount?.amount) {
+        const itemsTotal = saleProductsTotal.usd + saleGamingTotal.usd;
+        if (itemsTotal > 0) {
+          const productsRatio = saleProductsTotal.usd / itemsTotal;
+          const gamingRatio = saleGamingTotal.usd / itemsTotal;
+
+          // Apply proportional discount
+          saleProductsTotal.usd -= sale.saleDiscount.amount.usd * productsRatio;
+          saleProductsTotal.lbp -= sale.saleDiscount.amount.lbp * productsRatio;
+          saleGamingTotal.usd -= sale.saleDiscount.amount.usd * gamingRatio;
+          saleGamingTotal.lbp -= sale.saleDiscount.amount.lbp * gamingRatio;
+        }
+      }
+
+      // Add to totals
+      productsRevenue.usd += saleProductsTotal.usd;
+      productsRevenue.lbp += saleProductsTotal.lbp;
+      gamingRevenue.usd += saleGamingTotal.usd;
+      gamingRevenue.lbp += saleGamingTotal.lbp;
+
+      // Count sales by type
       if (saleHasProducts) productSalesCount++;
       if (saleHasGaming) gamingSalesCount++;
     }
+
+    // Total revenue = products + gaming (they should now match)
+    const totalRevenue = {
+      usd: Math.round((productsRevenue.usd + gamingRevenue.usd) * 100) / 100,
+      lbp: Math.round(productsRevenue.lbp + gamingRevenue.lbp),
+    };
+
+    // Round the individual amounts too
+    productsRevenue = {
+      usd: Math.round(productsRevenue.usd * 100) / 100,
+      lbp: Math.round(productsRevenue.lbp),
+    };
+    gamingRevenue = {
+      usd: Math.round(gamingRevenue.usd * 100) / 100,
+      lbp: Math.round(gamingRevenue.lbp),
+    };
 
     const usdPaymentsRevenue = usdPaymentSales.reduce(
       (acc, sale) => ({
@@ -647,10 +680,11 @@ class ReportService {
       Sale.countDocuments(query),
     ]);
 
-    // Get all sale IDs to fetch linked gaming sessions
+    // Get all sale IDs to fetch linked gaming sessions (only billable ones)
     const saleIds = transactions.map((t) => t._id);
     const gamingSessions = await GamingSession.find({
       sale: { $in: saleIds },
+      isBillable: { $ne: false }, // Exclude non-billable sessions
     })
       .populate("pc", "pcNumber name")
       .populate("customer", "name phone");
@@ -869,6 +903,7 @@ class ReportService {
           startTime: { $gte: dayStart, $lte: dayEnd },
           status: SessionStatus.COMPLETED,
           paymentStatus: SessionPaymentStatus.PAID,
+          isBillable: { $ne: false }, // Exclude non-billable sessions
         },
       },
       {
@@ -927,6 +962,7 @@ class ReportService {
           startTime: { $gte: startDate, $lte: endDate },
           status: SessionStatus.COMPLETED,
           paymentStatus: SessionPaymentStatus.PAID,
+          isBillable: { $ne: false }, // Exclude non-billable sessions
         },
       },
       {
@@ -985,10 +1021,12 @@ class ReportService {
     totalDiscounts: { usd: number; lbp: number };
     revenueBeforeDiscounts: { usd: number; lbp: number };
   }> {
+    // Only include billable sessions in reports
     const sessions = await GamingSession.find({
       startTime: { $gte: startDate, $lte: endDate },
       status: SessionStatus.COMPLETED,
       paymentStatus: SessionPaymentStatus.PAID,
+      isBillable: { $ne: false }, // Exclude non-billable sessions
     });
 
     const totalRevenue = sessions.reduce(
@@ -1048,6 +1086,7 @@ class ReportService {
     const matchQuery: any = {
       status: SessionStatus.COMPLETED,
       paymentStatus: SessionPaymentStatus.PAID,
+      isBillable: { $ne: false }, // Exclude non-billable sessions
     };
 
     if (startDate && endDate) {

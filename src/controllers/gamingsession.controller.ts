@@ -44,6 +44,7 @@ class GamingSessionController {
               invoiceNumber: (session.sale as any).invoiceNumber,
             }
           : null,
+        isBillable: session.isBillable,
         startedBy: {
           name: (session.startedBy as any).name,
         },
@@ -94,6 +95,7 @@ class GamingSessionController {
               totals: (session.sale as any).totals,
             }
           : null,
+        isBillable: session.isBillable,
       },
       "Gaming session ended successfully"
     );
@@ -161,6 +163,7 @@ class GamingSessionController {
               invoiceNumber: (session.sale as any).invoiceNumber,
             }
           : null,
+        isBillable: session.isBillable,
         notes: session.notes,
         createdAt: session.createdAt,
       },
@@ -204,6 +207,7 @@ class GamingSessionController {
         totalCost: session.totalCost,
         status: session.status,
         paymentStatus: session.paymentStatus,
+        isBillable: session.isBillable,
         startedBy: (session.startedBy as any).name,
       })),
       result.page,
@@ -254,6 +258,7 @@ class GamingSessionController {
             lbp: Math.round(currentCostLbp),
           },
           hourlyRate: session.hourlyRate,
+          isBillable: session.isBillable,
           startedBy: { name: (session.startedBy as any).name },
         };
       }),

@@ -91,14 +91,16 @@ class GamingSessionService {
       throw ApiError.badRequest("PC already has an active session");
     }
 
-    const sessionNumber = await this.generateSessionNumber();
-
-    // Determine if we should create a sale
+    // Determine if we should create a sale/session
     // Priority: request override > config default
     const shouldCreateSale = data.createSale !== undefined
       ? data.createSale
       : config.gaming.autoCreateSale;
 
+    // Determine if this is a billable session (will appear in reports)
+    const isBillable = shouldCreateSale || !!data.saleId;
+
+    const sessionNumber = await this.generateSessionNumber();
     let sale = null;
 
     if (data.saleId) {
@@ -147,7 +149,6 @@ class GamingSessionService {
         status: SaleStatus.PENDING,
       });
     }
-    // If shouldCreateSale is false and no saleId provided, sale remains null (standalone session)
 
     const session = await GamingSession.create({
       sessionNumber,
@@ -163,13 +164,14 @@ class GamingSessionService {
       notes: data.notes,
       status: SessionStatus.ACTIVE,
       paymentStatus: SessionPaymentStatus.UNPAID,
+      isBillable, // false = won't show in reports/history
     });
 
     pc.status = PCStatus.OCCUPIED;
     await pc.save();
 
     logger.info("[GAMING SESSION] ========================================");
-    logger.info("[GAMING SESSION] SESSION STARTED");
+    logger.info(`[GAMING SESSION] SESSION STARTED ${isBillable ? "(BILLABLE)" : "(NON-BILLABLE - won't show in reports)"}`);
     logger.info(`[GAMING SESSION] Session Number: ${session.sessionNumber}`);
     logger.info(`[GAMING SESSION] PC ID (MongoDB): ${pc._id}`);
     logger.info(`[GAMING SESSION] PC Number: ${pc.pcNumber}`);
@@ -177,6 +179,7 @@ class GamingSessionService {
     logger.info(`[GAMING SESSION] Customer: ${data.customerName || "Walk-in"}`);
     logger.info(`[GAMING SESSION] Hourly Rate: $${pc.hourlyRate.usd} / ${pc.hourlyRate.lbp} LBP`);
     logger.info(`[GAMING SESSION] Sale Created: ${sale ? "Yes (ID: " + sale._id + ")" : "No (standalone)"}`);
+    logger.info(`[GAMING SESSION] Billable: ${isBillable}`);
     logger.info("[GAMING SESSION] ----------------------------------------");
     logger.info(`[GAMING SESSION] Calling socketService.unlockPC("${pc.pcNumber}")...`);
 
@@ -800,7 +803,10 @@ class GamingSessionService {
       (s) => s.status === SessionStatus.COMPLETED
     ).length;
 
-    const paidSessions = sessions.filter(
+    // Only count billable sessions for revenue and unpaid stats
+    const billableSessions = sessions.filter((s) => s.isBillable !== false);
+
+    const paidSessions = billableSessions.filter(
       (s) => s.paymentStatus === SessionPaymentStatus.PAID
     );
 
@@ -812,7 +818,7 @@ class GamingSessionService {
       { usd: 0, lbp: 0 }
     );
 
-    const unpaidSessions = sessions.filter(
+    const unpaidSessions = billableSessions.filter(
       (s) =>
         s.status === SessionStatus.COMPLETED &&
         s.paymentStatus === SessionPaymentStatus.UNPAID
