@@ -49,6 +49,10 @@ export class CreatePCDto {
 export class UpdatePCDto {
   @IsOptional()
   @IsString()
+  pcNumber?: string;
+
+  @IsOptional()
+  @IsString()
   name?: string;
 
   @IsOptional()
