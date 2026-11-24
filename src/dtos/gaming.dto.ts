@@ -10,10 +10,14 @@ import {
   MaxLength,
   IsNotEmpty,
 } from "class-validator";
-import { PCStatus } from "../models/pc.model";
+import { PCStatus, StationType } from "../models/pc.model";
 import { PaymentMethod, Currency } from "../models/sale.model";
 
 export class CreatePCDto {
+  @IsOptional()
+  @IsEnum(StationType)
+  type?: StationType;
+
   @IsNotEmpty()
   @IsString()
   pcNumber!: string;
@@ -47,6 +51,10 @@ export class CreatePCDto {
 }
 
 export class UpdatePCDto {
+  @IsOptional()
+  @IsEnum(StationType)
+  type?: StationType;
+
   @IsOptional()
   @IsString()
   pcNumber?: string;

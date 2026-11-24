@@ -3,7 +3,35 @@ import { CustomRequest } from "../types";
 import pcService from "../services/pc.service";
 import { ApiResponseUtil } from "../utils/apiResponse";
 import { CreatePCDto, UpdatePCDto } from "../dtos/gaming.dto";
-import { PCStatus } from "../models/pc.model";
+import { IPC, PCStatus, StationType } from "../models/pc.model";
+import reservationService from "../services/reservation.service";
+import { IReservation } from "../models/reservation.model";
+
+/** Single place that shapes a station for API responses. */
+const formatPC = (pc: IPC, upcoming?: IReservation) => ({
+  id: pc._id.toString(),
+  type: pc.type ?? StationType.PC,
+  pcNumber: pc.pcNumber,
+  name: pc.name,
+  status: pc.status,
+  hourlyRate: pc.hourlyRate,
+  specifications: pc.specifications,
+  location: pc.location,
+  notes: pc.notes,
+  isActive: pc.isActive,
+  createdAt: pc.createdAt,
+  updatedAt: pc.updatedAt,
+  upcomingReservation: upcoming
+    ? {
+        id: upcoming._id.toString(),
+        code: upcoming.code,
+        customerName: upcoming.customerName,
+        startTime: upcoming.startTime,
+        endTime: upcoming.endTime,
+        status: upcoming.status,
+      }
+    : undefined,
+});
 
 class PCController {
   async createPC(req: CustomRequest, res: Response, next: NextFunction) {
@@ -12,19 +40,8 @@ class PCController {
 
     return ApiResponseUtil.created(
       res,
-      {
-        id: pc._id.toString(),
-        pcNumber: pc.pcNumber,
-        name: pc.name,
-        status: pc.status,
-        hourlyRate: pc.hourlyRate,
-        specifications: pc.specifications,
-        location: pc.location,
-        notes: pc.notes,
-        isActive: pc.isActive,
-        createdAt: pc.createdAt,
-      },
-      "PC created successfully"
+      formatPC(pc),
+      "Station created successfully"
     );
   }
 
@@ -35,19 +52,8 @@ class PCController {
 
     return ApiResponseUtil.success(
       res,
-      {
-        id: pc._id.toString(),
-        pcNumber: pc.pcNumber,
-        name: pc.name,
-        status: pc.status,
-        hourlyRate: pc.hourlyRate,
-        specifications: pc.specifications,
-        location: pc.location,
-        notes: pc.notes,
-        isActive: pc.isActive,
-        updatedAt: pc.updatedAt,
-      },
-      "PC updated successfully"
+      formatPC(pc),
+      "Station updated successfully"
     );
   }
 
@@ -57,46 +63,28 @@ class PCController {
 
     return ApiResponseUtil.success(
       res,
-      {
-        id: pc._id.toString(),
-        pcNumber: pc.pcNumber,
-        name: pc.name,
-        status: pc.status,
-        hourlyRate: pc.hourlyRate,
-        specifications: pc.specifications,
-        location: pc.location,
-        notes: pc.notes,
-        isActive: pc.isActive,
-        createdAt: pc.createdAt,
-        updatedAt: pc.updatedAt,
-      },
-      "PC retrieved successfully"
+      formatPC(pc),
+      "Station retrieved successfully"
     );
   }
 
   async getAllPCs(req: CustomRequest, res: Response, next: NextFunction) {
     const filters = {
       status: req.query.status as PCStatus,
+      type: req.query.type as StationType | undefined,
       isActive: req.query.isActive ? req.query.isActive === "true" : undefined,
       page: req.query.page ? Number(req.query.page) : 1,
       limit: req.query.limit ? Number(req.query.limit) : 50,
     };
 
-    const result = await pcService.getAllPCs(filters);
+    const [result, upcoming] = await Promise.all([
+      pcService.getAllPCs(filters),
+      reservationService.getUpcomingByStation(12),
+    ]);
 
     return ApiResponseUtil.paginated(
       res,
-      result.pcs.map((pc) => ({
-        id: pc._id.toString(),
-        pcNumber: pc.pcNumber,
-        name: pc.name,
-        status: pc.status,
-        hourlyRate: pc.hourlyRate,
-        specifications: pc.specifications,
-        location: pc.location,
-        isActive: pc.isActive,
-        createdAt: pc.createdAt,
-      })),
+      result.pcs.map((pc) => formatPC(pc, upcoming.get(pc._id.toString()))),
       result.page,
       filters.limit,
       result.total,
@@ -116,14 +104,7 @@ class PCController {
 
     return ApiResponseUtil.success(
       res,
-      pcs.map((pc) => ({
-        id: pc._id.toString(),
-        pcNumber: pc.pcNumber,
-        name: pc.name,
-        status: pc.status,
-        hourlyRate: pc.hourlyRate,
-        location: pc.location,
-      })),
+      pcs.map((pc) => formatPC(pc)),
       "Available PCs retrieved successfully"
     );
   }
@@ -173,30 +154,43 @@ class PCController {
     res: Response,
     next: NextFunction
   ) {
-    const pcs = await pcService.getAllPCs({ limit: 100 });
+    const [pcs, upcoming] = await Promise.all([
+      pcService.getAllPCs({ limit: 200, isActive: true }),
+      reservationService.getUpcomingByStation(12),
+    ]);
 
-    const pcStatus = pcs.pcs.map((pc) => ({
-      pcNumber: pc.pcNumber,
-      name: pc.name,
-      status: pc.status,
-      location: pc.location,
-    }));
+    const pcStatus = pcs.pcs.map((pc) => {
+      const next = upcoming.get(pc._id.toString());
+      return {
+        pcNumber: pc.pcNumber,
+        name: pc.name,
+        type: pc.type ?? StationType.PC,
+        status: pc.status,
+        location: pc.location,
+        // Only the time slot is public — never the customer's details
+        nextReservation: next ? { startTime: next.startTime, endTime: next.endTime } : undefined,
+      };
+    });
 
-    const stats = {
-      total: pcStatus.length,
-      available: pcStatus.filter((p) => p.status === PCStatus.AVAILABLE).length,
-      occupied: pcStatus.filter((p) => p.status === PCStatus.OCCUPIED).length,
-      maintenance: pcStatus.filter((p) => p.status === PCStatus.MAINTENANCE)
-        .length,
-    };
+    const countFor = (list: typeof pcStatus) => ({
+      total: list.length,
+      available: list.filter((p) => p.status === PCStatus.AVAILABLE).length,
+      occupied: list.filter((p) => p.status === PCStatus.OCCUPIED).length,
+      maintenance: list.filter((p) => p.status === PCStatus.MAINTENANCE).length,
+    });
 
     return ApiResponseUtil.success(
       res,
       {
         pcs: pcStatus,
-        stats,
+        // `stats` keeps its original meaning (PCs only) for older website builds
+        stats: countFor(pcStatus.filter((p) => p.type === StationType.PC)),
+        statsByType: {
+          pc: countFor(pcStatus.filter((p) => p.type === StationType.PC)),
+          playstation: countFor(pcStatus.filter((p) => p.type === StationType.PLAYSTATION)),
+        },
       },
-      "PC status retrieved successfully"
+      "Station status retrieved successfully"
     );
   }
 }
