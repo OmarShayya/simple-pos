@@ -1,4 +1,4 @@
-import PC, { IPC, PCStatus } from "../models/pc.model";
+import PC, { IPC, PCStatus, StationType } from "../models/pc.model";
 import GamingSession, {
   SessionPaymentStatus,
   SessionStatus,
@@ -9,6 +9,7 @@ import socketService from "./socket.service";
 
 interface PCFilters {
   status?: PCStatus;
+  type?: StationType;
   isActive?: boolean;
   page?: number;
   limit?: number;
@@ -16,6 +17,7 @@ interface PCFilters {
 
 class PCService {
   async createPC(data: {
+    type?: StationType;
     pcNumber: string;
     name: string;
     hourlyRateUsd?: number;
@@ -34,6 +36,7 @@ class PCService {
     );
 
     const pc = await PC.create({
+      type: data.type || StationType.PC,
       pcNumber: data.pcNumber,
       name: data.name,
       hourlyRate: {
@@ -52,6 +55,8 @@ class PCService {
   async updatePC(
     pcId: string,
     data: {
+      type?: StationType;
+      pcNumber?: string;
       name?: string;
       hourlyRateUsd?: number;
       specifications?: any;
@@ -82,6 +87,12 @@ class PCService {
       }
     }
 
+    if (data.pcNumber && data.pcNumber.toUpperCase() !== pc.pcNumber) {
+      const clash = await PC.findOne({ pcNumber: data.pcNumber.toUpperCase(), _id: { $ne: pc._id } });
+      if (clash) throw ApiError.badRequest("Station number already exists");
+      pc.pcNumber = data.pcNumber;
+    }
+    if (data.type) pc.type = data.type;
     if (data.name) pc.name = data.name;
     if (data.hourlyRateUsd !== undefined) {
       pc.hourlyRate.usd = data.hourlyRateUsd;
@@ -113,12 +124,16 @@ class PCService {
     page: number;
     totalPages: number;
   }> {
-    const { status, isActive, page = 1, limit = 50 } = filters;
+    const { status, type, isActive, page = 1, limit = 50 } = filters;
 
     const query: any = {};
 
     if (status) {
       query.status = status;
+    }
+
+    if (type) {
+      query.type = type;
     }
 
     if (isActive !== undefined) {
@@ -128,7 +143,7 @@ class PCService {
     const skip = (page - 1) * limit;
 
     const [pcs, total] = await Promise.all([
-      PC.find(query).sort({ pcNumber: 1 }).skip(skip).limit(limit),
+      PC.find(query).sort({ type: 1, pcNumber: 1 }).skip(skip).limit(limit),
       PC.countDocuments(query),
     ]);
 
@@ -163,7 +178,7 @@ class PCService {
     return await PC.find({
       status: PCStatus.AVAILABLE,
       isActive: true,
-    }).sort({ pcNumber: 1 });
+    }).sort({ type: 1, pcNumber: 1 });
   }
 
   async updatePCStatus(pcId: string, status: PCStatus): Promise<IPC> {
@@ -268,6 +283,12 @@ class PCService {
     socketService.lockPC(pc.pcNumber);
 
     return pc;
+  }
+
+  /** One-off migration: stations created before station types existed are PCs. */
+  async backfillStationTypes(): Promise<number> {
+    const res = await PC.updateMany({ type: { $exists: false } }, { $set: { type: StationType.PC } });
+    return res.modifiedCount;
   }
 
   private async generateSessionNumber(): Promise<string> {

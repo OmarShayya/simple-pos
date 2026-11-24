@@ -79,14 +79,29 @@ class AuthService {
     return user;
   }
 
-  async getAllUsers(): Promise<IUser[]> {
-    return await User.find({ isActive: true }).select("-password");
+  async countUsers(): Promise<number> {
+    return User.countDocuments();
+  }
+
+  async getAllUsers(includeInactive = false): Promise<IUser[]> {
+    return await User.find(includeInactive ? {} : { isActive: true })
+      .select("-password")
+      .sort({ isActive: -1, name: 1 });
   }
 
   async updateUser(
     id: string,
-    updates: { name?: string; role?: UserRole }
+    updates: { name?: string; role?: UserRole; isActive?: boolean },
+    actingUserId?: string
   ): Promise<IUser> {
+    if (actingUserId && actingUserId === id) {
+      if (updates.isActive === false) throw ApiError.badRequest("You can't deactivate your own account");
+      if (updates.role && updates.role !== UserRole.ADMIN) {
+        const admins = await User.countDocuments({ role: UserRole.ADMIN, isActive: true });
+        if (admins <= 1) throw ApiError.badRequest("You're the only admin — promote someone else first");
+      }
+    }
+
     const user = await User.findByIdAndUpdate(id, updates, {
       new: true,
       runValidators: true,
@@ -99,7 +114,10 @@ class AuthService {
     return user;
   }
 
-  async deactivateUser(id: string): Promise<void> {
+  async deactivateUser(id: string, actingUserId?: string): Promise<void> {
+    if (actingUserId && actingUserId === id) {
+      throw ApiError.badRequest("You can't deactivate your own account");
+    }
     const user = await User.findByIdAndUpdate(id, { isActive: false });
     if (!user) {
       throw ApiError.notFound("User not found");

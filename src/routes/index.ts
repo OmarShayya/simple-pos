@@ -9,6 +9,7 @@ import exchangeRateRoutes from "./exchangeRate.routes";
 import reportRoutes from "./report.routes";
 import gamingRoutes from "./gaming.routes";
 import discountRoutes from "./discount.routes";
+import reservationRoutes from "./reservation.routes";
 
 const router = Router();
 
@@ -30,5 +31,6 @@ router.use("/exchange-rate", exchangeRateRoutes);
 router.use("/reports", reportRoutes);
 router.use("/gaming", gamingRoutes);
 router.use("/discounts", discountRoutes);
+router.use("/reservations", reservationRoutes);
 
 export default router;

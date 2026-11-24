@@ -31,6 +31,16 @@ export const authenticate = async (
   }
 };
 
+/** Like `authenticate`, but lets anonymous requests through (req.user stays undefined). */
+export const optionalAuthenticate = async (
+  req: CustomRequest,
+  res: Response,
+  next: NextFunction
+) => {
+  if (!req.headers.authorization) return next();
+  return authenticate(req, res, next);
+};
+
 export const authorize = (...roles: UserRole[]) => {
   return (req: CustomRequest, res: Response, next: NextFunction) => {
     if (!req.user) {

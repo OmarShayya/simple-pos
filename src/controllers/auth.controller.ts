@@ -3,15 +3,44 @@ import { CustomRequest } from "../types";
 import authService from "../services/auth.service";
 import { ApiResponseUtil } from "../utils/apiResponse";
 import { RegisterDto, LoginDto, UpdateUserDto } from "../dtos/auth.dto";
+import { ApiError } from "../utils/apiError";
+import { UserRole } from "../models/user.model";
 
 class AuthController {
+  async getSetupStatus(req: CustomRequest, res: Response, next: NextFunction) {
+    const users = await authService.countUsers();
+    return ApiResponseUtil.success(res, { needsSetup: users === 0 }, "Setup status retrieved");
+  }
+
+  /**
+   * First run: anyone can create the first account (always an admin).
+   * Afterwards only signed-in admins (any role) and managers (cashiers only) can create accounts.
+   */
   async register(req: CustomRequest, res: Response, next: NextFunction) {
     const { name, email, password, role }: RegisterDto = req.body;
+    const isFirstUser = (await authService.countUsers()) === 0;
+
+    let effectiveRole: UserRole;
+    if (isFirstUser) {
+      effectiveRole = UserRole.ADMIN;
+    } else {
+      if (!req.user) {
+        throw ApiError.forbidden("Registration is closed. Ask an admin to create your account.");
+      }
+      effectiveRole = role ?? UserRole.CASHIER;
+      if (req.user.role === UserRole.CASHIER) {
+        throw ApiError.forbidden("Only admins and managers can create accounts");
+      }
+      if (req.user.role === UserRole.MANAGER && effectiveRole !== UserRole.CASHIER) {
+        throw ApiError.forbidden("Managers can only create cashier accounts");
+      }
+    }
+
     const { user, token } = await authService.register(
       name,
       email,
       password,
-      role
+      effectiveRole
     );
 
     return ApiResponseUtil.created(
@@ -64,7 +93,7 @@ class AuthController {
   }
 
   async getAllUsers(req: CustomRequest, res: Response, next: NextFunction) {
-    const users = await authService.getAllUsers();
+    const users = await authService.getAllUsers(req.query.includeInactive === "true");
 
     return ApiResponseUtil.success(
       res,
@@ -73,6 +102,7 @@ class AuthController {
         name: user.name,
         email: user.email,
         role: user.role,
+        isActive: user.isActive,
         createdAt: user.createdAt,
       })),
       "Users retrieved successfully"
@@ -82,7 +112,7 @@ class AuthController {
   async updateUser(req: CustomRequest, res: Response, next: NextFunction) {
     const { id } = req.params;
     const updates: UpdateUserDto = req.body;
-    const user = await authService.updateUser(id, updates);
+    const user = await authService.updateUser(id, updates, req.user?.id);
 
     return ApiResponseUtil.success(
       res,
@@ -91,6 +121,7 @@ class AuthController {
         name: user.name,
         email: user.email,
         role: user.role,
+        isActive: user.isActive,
       },
       "User updated successfully"
     );
@@ -98,7 +129,7 @@ class AuthController {
 
   async deactivateUser(req: CustomRequest, res: Response, next: NextFunction) {
     const { id } = req.params;
-    await authService.deactivateUser(id);
+    await authService.deactivateUser(id, req.user?.id);
     return ApiResponseUtil.noContent(res);
   }
 }

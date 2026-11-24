@@ -7,8 +7,15 @@ export enum PCStatus {
   RESERVED = "reserved",
 }
 
+/** What kind of gaming station this is. PlayStations are booked/billed like PCs. */
+export enum StationType {
+  PC = "pc",
+  PLAYSTATION = "playstation",
+}
+
 export interface IPC extends Document {
   _id: Types.ObjectId;
+  type: StationType;
   pcNumber: string;
   name: string;
   status: PCStatus;
@@ -31,6 +38,11 @@ export interface IPC extends Document {
 
 const pcSchema = new Schema<IPC>(
   {
+    type: {
+      type: String,
+      enum: Object.values(StationType),
+      default: StationType.PC,
+    },
     pcNumber: {
       type: String,
       required: [true, "PC number is required"],
@@ -88,6 +100,7 @@ const pcSchema = new Schema<IPC>(
 );
 
 pcSchema.index({ status: 1 });
+pcSchema.index({ type: 1 });
 pcSchema.index({ isActive: 1 });
 
 export default mongoose.model<IPC>("PC", pcSchema);

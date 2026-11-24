@@ -9,6 +9,9 @@ import routes from "./routes";
 
 const app: Application = express();
 
+// Behind Render's proxy: use the real client IP (needed for rate limiting)
+app.set("trust proxy", 1);
+
 app.use(helmet());
 app.use(cors({ origin: config.corsOrigin, credentials: true }));
 app.use(express.json({ limit: "10mb" }));
