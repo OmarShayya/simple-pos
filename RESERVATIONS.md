@@ -53,3 +53,12 @@ currently occupied.
 - `PATCH /reservations/:id/cancel` `{ reason? }`, `PATCH /reservations/:id/no-show`
 
 Statuses: `confirmed` → `checked_in` | `cancelled` | `no_show`.
+
+## Account creation (security fix)
+`POST /auth/register` used to accept any `role` from anyone, so a stranger could create an admin account.
+Now:
+- `GET /auth/setup-status` → `{ needsSetup }` (true only while there are no users).
+- The very first account can be created without signing in and is always an **admin**.
+- After that, registration requires a signed-in **admin** (any role) or **manager** (cashier accounts only).
+- `GET /auth/users?includeInactive=true` lists deactivated staff too; `PUT /auth/users/:id` accepts
+  `isActive` to reactivate. Admins can't deactivate themselves or demote the last admin.
