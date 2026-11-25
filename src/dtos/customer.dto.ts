@@ -10,8 +10,13 @@ import {
   ValidateNested,
   Length,
   ValidateIf,
+  IsIn,
+  IsInt,
+  Matches,
+  Max,
 } from "class-validator";
 import { Type } from "class-transformer";
+import { IsCalendarDate } from "./validators";
 
 class AddressDto {
   /** ISO-3166 alpha-2 ("LB"); a country name is also accepted and mapped to its code. */
@@ -113,4 +118,53 @@ export class UpdateBalanceDto {
   @IsNumber()
   @Min(0)
   lbp!: number;
+}
+
+const SOURCE_LIST = /^(pos|website|reservation)(,(pos|website|reservation))*$/;
+export const CUSTOMER_SORT_FIELDS = ["name", "lastPurchaseDate", "totalPurchases", "createdAt"] as const;
+export type CustomerSortField = (typeof CUSTOMER_SORT_FIELDS)[number];
+
+/** Query for GET /customers. Dates are lounge-local YYYY-MM-DD (inclusive). */
+export class ListCustomersQueryDto {
+  @IsOptional()
+  @IsString()
+  @MaxLength(100)
+  search?: string;
+
+  @IsOptional()
+  @IsIn(["true", "false"])
+  hasBalance?: "true" | "false";
+
+  @IsOptional()
+  @Matches(SOURCE_LIST, { message: "source must be pos, website, reservation or a comma list of them" })
+  source?: string;
+
+  @IsOptional()
+  @IsCalendarDate()
+  lastVisitFrom?: string;
+
+  @IsOptional()
+  @IsCalendarDate()
+  lastVisitTo?: string;
+
+  @IsOptional()
+  @IsIn(CUSTOMER_SORT_FIELDS as unknown as string[])
+  sort?: CustomerSortField;
+
+  @IsOptional()
+  @IsIn(["asc", "desc"])
+  order?: "asc" | "desc";
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  page?: number;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  @Max(100)
+  limit?: number;
 }

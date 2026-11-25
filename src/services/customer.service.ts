@@ -4,10 +4,20 @@ import { ApiError } from "../utils/apiError";
 import { toCountryCode } from "../utils/country";
 import { NormalizedPhone, normalizePhone, phoneSearchFragments, requirePhone } from "../utils/phone";
 import logger from "../utils/logger";
+import { localDateRange } from "../utils/period";
+import { getLoungeTimezone } from "./loungeSettings";
+import type { CustomerSortField } from "../dtos/customer.dto";
 
 interface CustomerFilters {
   search?: string;
   hasBalance?: boolean;
+  /** First-seen channel(s); customers saved before sources existed count as "pos". */
+  sources?: CustomerSource[];
+  /** Lounge-local YYYY-MM-DD, inclusive, over lastPurchaseDate */
+  lastVisitFrom?: string;
+  lastVisitTo?: string;
+  sort?: CustomerSortField;
+  order?: "asc" | "desc";
   page?: number;
   limit?: number;
 }
@@ -171,17 +181,29 @@ class CustomerService {
     page: number;
     totalPages: number;
   }> {
-    const { search, hasBalance, page = 1, limit = 20 } = filters;
+    const { search, hasBalance, sources, lastVisitFrom, lastVisitTo, sort = "name", order = "asc", page = 1, limit = 20 } = filters;
 
     const and: FilterQuery<ICustomer>[] = [{ isActive: true }];
     const searchFilter = search ? this.buildSearchFilter(search) : null;
     if (searchFilter) and.push(searchFilter);
     if (hasBalance) and.push({ $or: [{ "balance.usd": { $gt: 0 } }, { "balance.lbp": { $gt: 0 } }] });
+    if (sources?.length) {
+      and.push({ source: { $in: sources.includes(CustomerSource.POS) ? [...sources, null] : sources } });
+    }
+    if (lastVisitFrom || lastVisitTo) {
+      const { start, end } = localDateRange(await getLoungeTimezone(), lastVisitFrom, lastVisitTo);
+      and.push({ lastPurchaseDate: { $ne: null, ...(start ? { $gte: start } : {}), ...(end ? { $lt: end } : {}) } });
+    }
     const query: FilterQuery<ICustomer> = { $and: and };
+
+    // Mongo sorts missing values lowest, so descending dates naturally put "never visited" last.
+    // _id keeps paging stable when values tie.
+    const direction = order === "desc" ? -1 : 1;
+    const sortSpec: Record<string, 1 | -1> = { [sort]: direction, _id: direction };
 
     const skip = (page - 1) * limit;
     const [customers, total] = await Promise.all([
-      Customer.find(query).sort({ name: 1 }).skip(skip).limit(limit),
+      Customer.find(query).collation({ locale: "en", strength: 2 }).sort(sortSpec).skip(skip).limit(limit),
       Customer.countDocuments(query),
     ]);
 

@@ -3,7 +3,8 @@ import { CustomRequest } from "../types";
 import customerService from "../services/customer.service";
 import customerActivityService from "../services/customerActivity.service";
 import { ApiResponseUtil } from "../utils/apiResponse";
-import { CreateCustomerDto, UpdateCustomerDto, UpdateBalanceDto } from "../dtos/customer.dto";
+import { CreateCustomerDto, UpdateCustomerDto, UpdateBalanceDto, ListCustomersQueryDto } from "../dtos/customer.dto";
+import { CustomerSource } from "../models/customer.model";
 import { toCustomerDto } from "../presenters/customer.presenter";
 
 const positiveInt = (value: unknown, fallback: number, max = 100) => {
@@ -19,11 +20,17 @@ class CustomerController {
   }
 
   async getAllCustomers(req: CustomRequest, res: Response, _next: NextFunction) {
+    const q = res.locals.query as ListCustomersQueryDto;
     const filters = {
-      search: typeof req.query.search === "string" ? req.query.search : undefined,
-      hasBalance: req.query.hasBalance === "true",
-      page: positiveInt(req.query.page, 1, 100000),
-      limit: positiveInt(req.query.limit, 20),
+      search: q.search,
+      hasBalance: q.hasBalance === "true",
+      sources: q.source ? (q.source.split(",") as CustomerSource[]) : undefined,
+      lastVisitFrom: q.lastVisitFrom,
+      lastVisitTo: q.lastVisitTo,
+      sort: q.sort ?? "name",
+      order: q.order ?? (q.sort && q.sort !== "name" ? "desc" : "asc"),
+      page: positiveInt(q.page, 1, 100000),
+      limit: positiveInt(q.limit, 20),
     };
     const result = await customerService.getAllCustomers(filters);
 
