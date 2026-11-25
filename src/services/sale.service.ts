@@ -1,6 +1,7 @@
 import { Types } from "mongoose";
 import Sale, { ISale, ISaleItem, OrderSource, SaleRecord, SaleStatus } from "../models/sale.model";
 import GamingSession, { SessionStatus } from "../models/gamingsession.model";
+import Reservation, { ReservationStatus } from "../models/reservation.model";
 import customerService from "./customer.service";
 import { ApiError } from "../utils/apiError";
 import { localDateRange } from "../utils/period";
@@ -22,6 +23,8 @@ import { orderDiscountTotal, recalculateOrder } from "./orders/orderPricing";
 import { buildOrderFilter, OrderListFilters } from "./orders/orderQuery";
 import { LiveOrder, OrderSessions, toLiveOrder, toLiveOrders } from "./orders/liveOrders";
 import { sumMoney, roundMoney } from "../utils/money";
+
+const ATTENTION_WINDOW_MS = 30 * 60 * 1000;
 
 export interface SessionDiscountInput {
   productSku?: string;
@@ -170,12 +173,20 @@ class SaleService {
   }
 
   /** Sidebar badges. */
-  async getCounts(): Promise<{ open: number; websiteOpen: number }> {
-    const [open, websiteOpen] = await Promise.all([
+  /** Sidebar badges: open orders, website orders waiting, and bookings that need staff attention now. */
+  async getCounts(): Promise<{ open: number; websiteOpen: number; reservationsAttention: number }> {
+    const now = Date.now();
+    const [open, websiteOpen, reservationsAttention] = await Promise.all([
       Sale.countDocuments({ status: SaleStatus.PENDING }),
       Sale.countDocuments({ status: SaleStatus.PENDING, source: OrderSource.WEBSITE }),
+      // Confirmed and either late (start passed, nobody checked in) or arriving within 30 minutes
+      Reservation.countDocuments({
+        status: ReservationStatus.CONFIRMED,
+        startTime: { $lte: new Date(now + ATTENTION_WINDOW_MS) },
+        endTime: { $gt: new Date(now) },
+      }),
     ]);
-    return { open, websiteOpen };
+    return { open, websiteOpen, reservationsAttention };
   }
 
   async cancelSale(saleId: string, userId?: string): Promise<ISale> {
