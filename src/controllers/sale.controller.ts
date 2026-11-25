@@ -1,3 +1,4 @@
+import type { OrderTypeFilter } from "../services/orders/orderQuery";
 import { Response, NextFunction } from "express";
 import { CustomRequest } from "../types";
 import saleService from "../services/sale.service";
@@ -102,7 +103,7 @@ class SaleController {
       {
         status: q.status ? (q.status.split(",") as SaleStatus[]) : undefined,
         source: q.source,
-        type: q.type,
+        types: q.type ? (q.type.split(",") as OrderTypeFilter[]) : undefined,
         search: q.search,
         from: q.from ?? q.startDate,
         to: q.to ?? q.endDate,

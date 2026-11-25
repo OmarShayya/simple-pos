@@ -1,6 +1,5 @@
 import {
   ArrayMaxSize,
-  IsIn,
   IsInt,
   Length,
   Matches,
@@ -23,6 +22,7 @@ import { PaymentMethod, Currency, OrderSource } from "../models/sale.model";
 import { IsCalendarDate } from "./validators";
 
 const STATUS_LIST = /^(pending|paid|cancelled)(,(pending|paid|cancelled))*$/;
+const TYPE_LIST = /^(gaming|products|mixed)(,(gaming|products|mixed))*$/;
 
 export class SaleItemDto {
   @IsNotEmpty()
@@ -180,9 +180,10 @@ export class ListOrdersQueryDto {
   @IsEnum(OrderSource)
   source?: OrderSource;
 
+  /** gaming (station time only), products (no station time), mixed (both) — comma list = any of them */
   @IsOptional()
-  @IsIn(["gaming", "products", "mixed"])
-  type?: "gaming" | "products" | "mixed";
+  @Matches(TYPE_LIST, { message: "type must be gaming, products, mixed or a comma list of them" })
+  type?: string;
 
   @IsOptional()
   @IsString()

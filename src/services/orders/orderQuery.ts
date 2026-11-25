@@ -8,7 +8,8 @@ export type OrderTypeFilter = "gaming" | "products" | "mixed";
 export interface OrderListFilters {
   status?: SaleStatus[];
   source?: OrderSource;
-  type?: OrderTypeFilter;
+  /** Any of these line mixes (e.g. ["gaming","mixed"] = every order with station time) */
+  types?: OrderTypeFilter[];
   search?: string;
   /** Lounge-local YYYY-MM-DD, inclusive */
   from?: string;
@@ -41,7 +42,10 @@ export const buildOrderFilter = async (f: OrderListFilters, tz: string): Promise
   if (f.status?.length) and.push({ status: { $in: f.status } });
   if (f.source === OrderSource.POS) and.push({ source: { $in: [OrderSource.POS, null] } });
   else if (f.source) and.push({ source: f.source });
-  if (f.type) and.push(typeFilter(f.type));
+  const types = [...new Set(f.types ?? [])];
+  if (types.length === 1) and.push(typeFilter(types[0]));
+  else if (types.length > 1 && types.length < 3) and.push({ $or: types.map(typeFilter) });
+  // all three types = no restriction
   if (f.customerId) and.push({ customer: new Types.ObjectId(f.customerId) });
   if (f.cashierId) and.push({ cashier: new Types.ObjectId(f.cashierId) });
 
