@@ -135,7 +135,7 @@ class PCController {
   async unlockPC(req: CustomRequest, res: Response, next: NextFunction) {
     const { id } = req.params;
 
-    const pc = await pcService.unlockPC(id);
+    const pc = await pcService.unlockPC(id, req.user!.id);
 
     return ApiResponseUtil.success(
       res,

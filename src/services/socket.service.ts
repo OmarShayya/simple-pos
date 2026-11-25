@@ -1,6 +1,10 @@
 import { Server as SocketServer, Socket } from "socket.io";
 import { Server as HTTPServer } from "http";
 import logger from "../utils/logger";
+import authService from "./auth.service";
+
+/** Room joined by signed-in POS clients; order notifications go only there (never to PC agents). */
+export const STAFF_ROOM = "staff";
 
 interface PCData {
   socketId: string;
@@ -45,6 +49,10 @@ class SocketService {
       logger.info(`[SOCKET] Remote Address: ${socket.handshake.address}`);
       logger.info(`[SOCKET] Connected PCs before: ${this.connectedPCs.size}`);
       logger.info("[SOCKET] ----------------------------------------");
+
+      // POS clients authenticate with their JWT: io(url, { auth: { token } }) or emit("staff:join", { token })
+      this.tryJoinStaff(socket, socket.handshake.auth?.token);
+      socket.on("staff:join", (data: { token?: string } | undefined) => this.tryJoinStaff(socket, data?.token));
 
       socket.on("register", (data: PCRegistration) => {
         logger.info("[SOCKET] ========== PC REGISTRATION ==========");
@@ -115,6 +123,23 @@ class SocketService {
     });
 
     logger.info("[SOCKET] Socket.io server initialized and listening");
+  }
+
+  private tryJoinStaff(socket: Socket, token: unknown): void {
+    if (typeof token !== "string" || !token) return;
+    try {
+      const user = authService.verifyToken(token);
+      socket.join(STAFF_ROOM);
+      socket.emit("staff:joined", { ok: true });
+      logger.info(`[SOCKET] ${socket.id} joined staff room (${user.email})`);
+    } catch {
+      socket.emit("staff:joined", { ok: false });
+    }
+  }
+
+  /** Sends an event to every signed-in POS client. */
+  emitToStaff(event: string, payload: unknown): void {
+    this.io?.to(STAFF_ROOM).emit(event, payload);
   }
 
   lockPC(pcId: string): boolean {

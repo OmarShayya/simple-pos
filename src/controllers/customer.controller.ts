@@ -1,6 +1,7 @@
 import { Response, NextFunction } from "express";
 import { CustomRequest } from "../types";
 import customerService from "../services/customer.service";
+import customerActivityService from "../services/customerActivity.service";
 import { ApiResponseUtil } from "../utils/apiResponse";
 import { CreateCustomerDto, UpdateCustomerDto, UpdateBalanceDto } from "../dtos/customer.dto";
 import { toCustomerDto } from "../presenters/customer.presenter";
@@ -39,6 +40,11 @@ class CustomerController {
   async getCustomerById(req: CustomRequest, res: Response, _next: NextFunction) {
     const customer = await customerService.getCustomerById(req.params.id);
     return ApiResponseUtil.success(res, toCustomerDto(customer), "Customer retrieved successfully");
+  }
+
+  async getActivity(req: CustomRequest, res: Response, _next: NextFunction) {
+    const activity = await customerActivityService.getActivity(req.params.id);
+    return ApiResponseUtil.success(res, activity, "Customer activity retrieved successfully");
   }
 
   async getCustomerByPhone(req: CustomRequest, res: Response, _next: NextFunction) {

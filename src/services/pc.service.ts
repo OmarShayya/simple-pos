@@ -6,6 +6,7 @@ import GamingSession, {
 import { ApiError } from "../utils/apiError";
 import config from "../config/config";
 import socketService from "./socket.service";
+import gamingSessionService from "./gamingsession.service";
 
 interface PCFilters {
   status?: PCStatus;
@@ -192,128 +193,33 @@ class PCService {
     return pc;
   }
 
-  async lockPC(
-    pcId: string,
-    customerId?: string,
-    customerName?: string,
-    startedBy?: string
-  ): Promise<IPC> {
-    const pc = await PC.findById(pcId);
-    if (!pc) {
-      throw ApiError.notFound("PC not found");
-    }
-
-    if (pc.status === PCStatus.OCCUPIED) {
-      throw ApiError.badRequest("PC is already occupied");
-    }
-
-    if (!pc.isActive) {
-      throw ApiError.badRequest("PC is not active");
-    }
-
-    const existingSession = await GamingSession.findOne({
-      pc: pcId,
-      status: SessionStatus.ACTIVE,
-    });
-
-    if (existingSession) {
-      throw ApiError.badRequest("PC already has an active session");
-    }
-
-    const sessionNumber = await this.generateSessionNumber();
-
-    await GamingSession.create({
-      sessionNumber,
-      pc: pcId,
-      customer: customerId,
-      customerName: customerName || "Walk-in",
-      startTime: new Date(),
-      hourlyRate: pc.hourlyRate,
-      startedBy: startedBy, // Use the passed user ID
-      status: SessionStatus.ACTIVE,
-      paymentStatus: SessionPaymentStatus.UNPAID,
-    });
-
-    pc.status = PCStatus.OCCUPIED;
-    await pc.save();
-
-    // Send unlock command to the physical PC (so user can play)
-    socketService.unlockPC(pc.pcNumber);
-
-    return pc;
+  /**
+   * Station "lock" action from the stations admin page: starts a session (which always opens an order).
+   * Kept as a thin wrapper so the old endpoint can't create sessions that bypass billing.
+   */
+  async lockPC(pcId: string, customerId?: string, customerName?: string, startedBy?: string): Promise<IPC> {
+    if (!startedBy) throw ApiError.unauthorized("Not authenticated");
+    await gamingSessionService.startSession(startedBy, { pcId, customerId, customerName });
+    return this.getPCById(pcId);
   }
 
-  async unlockPC(pcId: string): Promise<IPC> {
-    const pc = await PC.findById(pcId);
-    if (!pc) {
-      throw ApiError.notFound("PC not found");
+  /** Station "unlock" action: ends the running session (billing it on its order) and frees the station. */
+  async unlockPC(pcId: string, endedBy?: string): Promise<IPC> {
+    const pc = await this.getPCById(pcId);
+    const ended = endedBy ? await gamingSessionService.endActiveSessionOnStation(pcId, endedBy) : null;
+    if (!ended) {
+      pc.status = PCStatus.AVAILABLE;
+      await pc.save();
+      socketService.lockPC(pc.pcNumber);
+      return pc;
     }
-
-    // Find and end active session
-    const activeSession = await GamingSession.findOne({
-      pc: pcId,
-      status: SessionStatus.ACTIVE,
-    });
-
-    if (activeSession) {
-      // End the session
-      const endTime = new Date();
-      const durationMs = endTime.getTime() - activeSession.startTime.getTime();
-      const durationMinutes = Math.ceil(durationMs / (1000 * 60));
-      const durationHours = durationMinutes / 60;
-
-      const costUsd = activeSession.hourlyRate.usd * durationHours;
-      const costLbp = activeSession.hourlyRate.lbp * durationHours;
-
-      activeSession.endTime = endTime;
-      activeSession.duration = durationMinutes;
-      activeSession.totalCost = {
-        usd: Math.round(costUsd * 100) / 100,
-        lbp: Math.round(costLbp),
-      };
-      activeSession.status = SessionStatus.COMPLETED;
-      await activeSession.save();
-    }
-
-    // Update PC status
-    pc.status = PCStatus.AVAILABLE;
-    await pc.save();
-
-    // Send lock command to the physical PC (session ended)
-    socketService.lockPC(pc.pcNumber);
-
-    return pc;
+    return this.getPCById(pcId);
   }
 
   /** One-off migration: stations created before station types existed are PCs. */
   async backfillStationTypes(): Promise<number> {
     const res = await PC.updateMany({ type: { $exists: false } }, { $set: { type: StationType.PC } });
     return res.modifiedCount;
-  }
-
-  private async generateSessionNumber(): Promise<string> {
-    const date = new Date();
-    const year = date.getFullYear();
-    const month = String(date.getMonth() + 1).padStart(2, "0");
-    const day = String(date.getDate()).padStart(2, "0");
-
-    const lastSession = await GamingSession.findOne().sort({ createdAt: -1 });
-    let sequence = 1;
-
-    if (lastSession) {
-      const lastSessionDate = lastSession.sessionNumber.substring(0, 8);
-      const todayDate = `${year}${month}${day}`;
-
-      if (lastSessionDate === todayDate) {
-        const lastSequence = parseInt(
-          lastSession.sessionNumber.substring(9),
-          10
-        );
-        sequence = lastSequence + 1;
-      }
-    }
-
-    return `${year}${month}${day}-${String(sequence).padStart(4, "0")}`;
   }
 }
 

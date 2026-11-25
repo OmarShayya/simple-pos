@@ -1,4 +1,10 @@
 import {
+  ArrayMaxSize,
+  IsIn,
+  IsInt,
+  Length,
+  Matches,
+  Max,
   IsNotEmpty,
   IsOptional,
   IsString,
@@ -13,7 +19,10 @@ import {
   ValidateIf,
 } from "class-validator";
 import { Type } from "class-transformer";
-import { PaymentMethod, Currency } from "../models/sale.model";
+import { PaymentMethod, Currency, OrderSource } from "../models/sale.model";
+
+const DATE = /^\d{4}-\d{2}-\d{2}$/;
+const STATUS_LIST = /^(pending|paid|cancelled)(,(pending|paid|cancelled))*$/;
 
 export class SaleItemDto {
   @IsNotEmpty()
@@ -32,9 +41,15 @@ export class SaleItemDto {
 }
 
 export class SessionDiscountDto {
+  /** The gaming line's SKU ("SESSION-…") — or identify it by `gamingSessionId`. */
+  @ValidateIf((o) => !o.gamingSessionId)
   @IsNotEmpty()
   @IsString()
-  productSku!: string;
+  productSku?: string;
+
+  @IsOptional()
+  @IsMongoId()
+  gamingSessionId?: string;
 
   @IsOptional()
   @ValidateIf((o) => o.discountId !== "")
@@ -107,4 +122,109 @@ export class PaySaleDto {
   @IsNumber()
   @Min(0)
   amount!: number;
+}
+
+export class PublicOrderItemDto {
+  @IsNotEmpty()
+  @IsMongoId()
+  productId!: string;
+
+  @IsInt()
+  @Min(1)
+  @Max(50)
+  quantity!: number;
+}
+
+/** Order placed from the website menu (no auth). Prices are always taken from the database. */
+export class PublicOrderDto {
+  @IsArray()
+  @ArrayMinSize(1)
+  @ArrayMaxSize(30)
+  @ValidateNested({ each: true })
+  @Type(() => PublicOrderItemDto)
+  items!: PublicOrderItemDto[];
+
+  @IsString()
+  @IsNotEmpty()
+  @MaxLength(80)
+  customerName!: string;
+
+  @IsString()
+  @IsNotEmpty()
+  @MaxLength(30)
+  customerPhone!: string;
+
+  @IsOptional()
+  @IsString()
+  @Length(2, 2)
+  phoneCountry?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(500)
+  notes?: string;
+
+  /** Honeypot: real users never fill this hidden field. */
+  @IsOptional()
+  @IsString()
+  website?: string;
+}
+
+/** Query of GET /sales (the orders list). */
+export class ListOrdersQueryDto {
+  @IsOptional()
+  @Matches(STATUS_LIST, { message: "status must be pending, paid, cancelled or a comma list of them" })
+  status?: string;
+
+  @IsOptional()
+  @IsEnum(OrderSource)
+  source?: OrderSource;
+
+  @IsOptional()
+  @IsIn(["gaming", "products", "mixed"])
+  type?: "gaming" | "products" | "mixed";
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(100)
+  search?: string;
+
+  /** YYYY-MM-DD in the lounge timezone (inclusive) */
+  @IsOptional()
+  @Matches(DATE, { message: "from must be YYYY-MM-DD" })
+  from?: string;
+
+  @IsOptional()
+  @Matches(DATE, { message: "to must be YYYY-MM-DD" })
+  to?: string;
+
+  /** Older clients: same as from/to */
+  @IsOptional()
+  @Matches(DATE, { message: "startDate must be YYYY-MM-DD" })
+  startDate?: string;
+
+  @IsOptional()
+  @Matches(DATE, { message: "endDate must be YYYY-MM-DD" })
+  endDate?: string;
+
+  @IsOptional()
+  @IsMongoId()
+  customerId?: string;
+
+  @IsOptional()
+  @IsMongoId()
+  cashierId?: string;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  page?: number;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  @Max(100)
+  limit?: number;
 }

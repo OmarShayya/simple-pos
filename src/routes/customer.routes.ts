@@ -35,6 +35,12 @@ router.get(
 );
 
 router.get(
+  "/:id/activity",
+  authenticate,
+  asyncHandler(customerController.getActivity)
+);
+
+router.get(
   "/:id",
   authenticate,
   asyncHandler(customerController.getCustomerById)
