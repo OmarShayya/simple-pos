@@ -4,7 +4,7 @@ import GamingSession, {
   SessionPaymentStatus,
 } from "../models/gamingsession.model";
 import { Money, roundMoney, zeroMoney, addMoney } from "../utils/money";
-import { locateBucket, ReportPeriod, resolvePeriod, ResolvedPeriod } from "../utils/period";
+import { localDateRange, locateBucket, ReportPeriod, resolvePeriod, ResolvedPeriod } from "../utils/period";
 import { localDateString, localHour } from "../utils/time";
 import { getLoungeTimezone } from "./loungeSettings";
 import { isGamingLine } from "./orders/orderLines";
@@ -75,7 +75,27 @@ const bucketRows = (entries: LedgerEntry[], period: ResolvedPeriod) => {
 
 const pad = (n: number) => String(n).padStart(2, "0");
 
+const dayOf = (value: Date | string | undefined): string | undefined =>
+  value === undefined ? undefined : typeof value === "string" ? value.slice(0, 10) : value.toISOString().slice(0, 10);
+
 class ReportService {
+  /** [start of `from`, end of `to`] in the lounge timezone; missing days default to today. */
+  private async localDays(from?: Date | string, to?: Date | string) {
+    const tz = await getLoungeTimezone();
+    const today = localDateString(new Date(), tz);
+    const first = dayOf(from) ?? today;
+    const last = dayOf(to) ?? dayOf(from) ?? today;
+    const { start, end } = localDateRange(tz, first, last);
+    return { tz, start: start!, end: new Date(end!.getTime() - 1) };
+  }
+
+  /** Lounge-local day range for optional YYYY-MM-DD bounds (undefined when neither is given). */
+  async dayRange(from?: string, to?: string): Promise<{ start: Date; end: Date } | undefined> {
+    if (!from && !to) return undefined;
+    const { start, end } = await this.localDays(from ?? to, to ?? from);
+    return { start, end };
+  }
+
   private async periodLedger(period: ReportPeriod, date: string) {
     const tz = await getLoungeTimezone();
     const resolved = resolvePeriod(period, date, tz);
@@ -189,7 +209,7 @@ class ReportService {
     };
 
     if (startDate && endDate) {
-      matchQuery.createdAt = { $gte: startDate, $lte: endDate };
+      matchQuery.paidAt = { $gte: startDate, $lte: endDate };
     }
 
     const pipeline: any[] = [
@@ -227,14 +247,10 @@ class ReportService {
           _id: "$categoryInfo._id",
           categoryName: { $first: "$categoryInfo.name" },
           totalQuantity: { $sum: "$items.quantity" },
-          revenueBeforeDiscount: {
-            usd: { $sum: "$items.subtotal.usd" },
-            lbp: { $sum: "$items.subtotal.lbp" },
-          },
-          totalDiscounts: {
-            usd: { $sum: { $ifNull: ["$items.discount.amount.usd", 0] } },
-            lbp: { $sum: { $ifNull: ["$items.discount.amount.lbp", 0] } },
-          },
+          revenueBeforeDiscountUsd: { $sum: "$items.subtotal.usd" },
+          revenueBeforeDiscountLbp: { $sum: "$items.subtotal.lbp" },
+          totalDiscountsUsd: { $sum: { $ifNull: ["$items.discount.amount.usd", 0] } },
+          totalDiscountsLbp: { $sum: { $ifNull: ["$items.discount.amount.lbp", 0] } },
           totalRevenueUsd: { $sum: "$items.finalAmount.usd" },
           totalRevenueLbp: { $sum: "$items.finalAmount.lbp" },
           salesCount: { $sum: 1 },
@@ -251,8 +267,8 @@ class ReportService {
       categoryId: cat._id.toString(),
       categoryName: cat.categoryName,
       totalQuantitySold: cat.totalQuantity,
-      revenueBeforeDiscount: cat.revenueBeforeDiscount,
-      totalDiscounts: cat.totalDiscounts,
+      revenueBeforeDiscount: { usd: cat.revenueBeforeDiscountUsd, lbp: cat.revenueBeforeDiscountLbp },
+      totalDiscounts: { usd: cat.totalDiscountsUsd, lbp: cat.totalDiscountsLbp },
       totalRevenue: {
         usd: cat.totalRevenueUsd,
         lbp: cat.totalRevenueLbp,
@@ -271,7 +287,7 @@ class ReportService {
     };
 
     if (startDate && endDate) {
-      matchQuery.createdAt = { $gte: startDate, $lte: endDate };
+      matchQuery.paidAt = { $gte: startDate, $lte: endDate };
     }
 
     const pipeline: any[] = [
@@ -293,14 +309,10 @@ class ReportService {
           productName: { $first: "$items.productName" },
           productSku: { $first: "$items.productSku" },
           totalQuantity: { $sum: "$items.quantity" },
-          revenueBeforeDiscount: {
-            usd: { $sum: "$items.subtotal.usd" },
-            lbp: { $sum: "$items.subtotal.lbp" },
-          },
-          totalDiscounts: {
-            usd: { $sum: { $ifNull: ["$items.discount.amount.usd", 0] } },
-            lbp: { $sum: { $ifNull: ["$items.discount.amount.lbp", 0] } },
-          },
+          revenueBeforeDiscountUsd: { $sum: "$items.subtotal.usd" },
+          revenueBeforeDiscountLbp: { $sum: "$items.subtotal.lbp" },
+          totalDiscountsUsd: { $sum: { $ifNull: ["$items.discount.amount.usd", 0] } },
+          totalDiscountsLbp: { $sum: { $ifNull: ["$items.discount.amount.lbp", 0] } },
           totalRevenueUsd: { $sum: "$items.finalAmount.usd" },
           totalRevenueLbp: { $sum: "$items.finalAmount.lbp" },
           salesCount: { $sum: 1 },
@@ -318,8 +330,8 @@ class ReportService {
       productName: prod.productName,
       productSku: prod.productSku,
       totalQuantitySold: prod.totalQuantity,
-      revenueBeforeDiscount: prod.revenueBeforeDiscount,
-      totalDiscounts: prod.totalDiscounts,
+      revenueBeforeDiscount: { usd: prod.revenueBeforeDiscountUsd, lbp: prod.revenueBeforeDiscountLbp },
+      totalDiscounts: { usd: prod.totalDiscountsUsd, lbp: prod.totalDiscountsLbp },
       totalRevenue: {
         usd: prod.totalRevenueUsd,
         lbp: prod.totalRevenueLbp,
@@ -329,9 +341,9 @@ class ReportService {
   }
 
   async getDailyTransactions(
-    date: Date,
-    startDate?: Date,
-    endDate?: Date,
+    date?: string,
+    startDate?: string,
+    endDate?: string,
     page: number = 1,
     limit: number = 50
   ) {
@@ -339,16 +351,8 @@ class ReportService {
       status: { $ne: SaleStatus.CANCELLED },
     };
 
-    if (startDate && endDate) {
-      query.createdAt = { $gte: startDate, $lte: endDate };
-    } else {
-      // Default to the specific date
-      const dayStart = new Date(date);
-      dayStart.setHours(0, 0, 0, 0);
-      const dayEnd = new Date(date);
-      dayEnd.setHours(23, 59, 59, 999);
-      query.createdAt = { $gte: dayStart, $lte: dayEnd };
-    }
+    const days = startDate && endDate ? await this.localDays(startDate, endDate) : await this.localDays(date);
+    query.createdAt = { $gte: days.start, $lte: days.end };
 
     const skip = (page - 1) * limit;
 
@@ -508,12 +512,12 @@ class ReportService {
 
   async exportToCSV(type: string, startDate: Date, endDate: Date) {
     const sales = await Sale.find({
-      createdAt: { $gte: startDate, $lte: endDate },
+      paidAt: { $gte: startDate, $lte: endDate },
       status: SaleStatus.PAID,
     })
       .populate("customer", "name phone")
       .populate("cashier", "name")
-      .sort({ createdAt: 1 });
+      .sort({ paidAt: 1 });
 
     const headers = [
       "Invoice Number",
@@ -573,11 +577,8 @@ class ReportService {
     return [headers, ...rows].join("\n");
   }
 
-  async getDailyGamingReport(date: Date) {
-    const dayStart = new Date(date);
-    dayStart.setHours(0, 0, 0, 0);
-    const dayEnd = new Date(date);
-    dayEnd.setHours(23, 59, 59, 999);
+  async getDailyGamingReport(date?: string) {
+    const { tz, start: dayStart, end: dayEnd } = await this.localDays(date);
 
     const revenue = await this.getGamingRevenue(dayStart, dayEnd);
 
@@ -593,7 +594,7 @@ class ReportService {
       {
         $group: {
           _id: {
-            $hour: "$startTime",
+            $hour: { date: "$startTime", timezone: tz },
           },
           totalSessions: { $sum: 1 },
           totalUsd: {
@@ -620,6 +621,7 @@ class ReportService {
       period: {
         type: "daily",
         date: dayStart,
+        timezone: tz,
       },
       revenue,
       hourlyBreakdown: hourlyBreakdown.map((hour) => ({
@@ -632,11 +634,14 @@ class ReportService {
     };
   }
 
-  async getMonthlyGamingReport(month: number, year: number) {
-    const startDate = new Date(year, month - 1, 1);
-    startDate.setHours(0, 0, 0, 0);
-    const endDate = new Date(year, month, 0);
-    endDate.setHours(23, 59, 59, 999);
+  async getMonthlyGamingReport(month?: number, year?: number) {
+    const tz = await getLoungeTimezone();
+    const [ty, tm] = localDateString(new Date(), tz).split("-").map(Number);
+    year = year || ty;
+    month = month || tm;
+    const { range } = resolvePeriod("month", `${year}-${pad(month)}-01`, tz);
+    const startDate = range.start;
+    const endDate = new Date(range.end.getTime() - 1);
 
     const revenue = await this.getGamingRevenue(startDate, endDate);
 
@@ -652,7 +657,7 @@ class ReportService {
       {
         $group: {
           _id: {
-            $dateToString: { format: "%Y-%m-%d", date: "$startTime" },
+            $dateToString: { format: "%Y-%m-%d", date: "$startTime", timezone: tz },
           },
           totalSessions: { $sum: 1 },
           totalUsd: {
@@ -754,6 +759,18 @@ class ReportService {
     };
   }
 
+  /** Gaming-session revenue for lounge-local days (default: today). */
+  async getGamingRevenueForDays(from?: string, to?: string) {
+    const { start, end } = await this.localDays(from, to);
+    return this.getGamingRevenue(start, end);
+  }
+
+  async getGamingRevenueByPCForDays(from?: string, to?: string) {
+    if (!from && !to) return this.getGamingRevenueByPC();
+    const { start, end } = await this.localDays(from, to);
+    return this.getGamingRevenueByPC(start, end);
+  }
+
   async getGamingRevenueByPC(
     startDate?: Date,
     endDate?: Date
@@ -843,7 +860,7 @@ class ReportService {
     };
 
     if (startDate && endDate) {
-      matchQuery.createdAt = { $gte: startDate, $lte: endDate };
+      matchQuery.paidAt = { $gte: startDate, $lte: endDate };
     }
 
     // Get item-level discounts
@@ -959,7 +976,7 @@ class ReportService {
     }
 
     if (startDate && endDate) {
-      matchQuery.createdAt = { $gte: startDate, $lte: endDate };
+      matchQuery.paidAt = { $gte: startDate, $lte: endDate };
     }
 
     const results = await Sale.aggregate([
