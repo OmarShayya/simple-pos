@@ -1,8 +1,5 @@
 import PC, { IPC, PCStatus, StationType } from "../models/pc.model";
-import GamingSession, {
-  SessionPaymentStatus,
-  SessionStatus,
-} from "../models/gamingsession.model";
+import GamingSession, { SessionStatus } from "../models/gamingsession.model";
 import { ApiError } from "../utils/apiError";
 import config from "../config/config";
 import socketService from "./socket.service";
