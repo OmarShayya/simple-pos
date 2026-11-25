@@ -33,8 +33,12 @@ export const getTzOffsetMs = (tz: string, date: Date): number => {
   return asUtc - Math.floor(date.getTime() / 1000) * 1000;
 };
 
-/** Validates a YYYY-MM-DD string. */
-export const isDateString = (s: string): boolean => /^\d{4}-\d{2}-\d{2}$/.test(s) && !isNaN(Date.parse(`${s}T00:00:00Z`));
+/** Validates a YYYY-MM-DD string that is a real calendar day (rejects "2025-02-31"). */
+export const isDateString = (s: string): boolean => {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(s)) return false;
+  const t = Date.parse(`${s}T00:00:00Z`);
+  return !isNaN(t) && new Date(t).toISOString().slice(0, 10) === s;
+};
 
 /** Validates an HH:mm (24h) string. */
 export const isTimeString = (s: string): boolean => /^([01]\d|2[0-3]):[0-5]\d$/.test(s);

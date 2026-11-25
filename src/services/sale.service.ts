@@ -90,6 +90,7 @@ class SaleService {
 
     if (data.items !== undefined) {
       const kept = gamingLines(sale.items);
+      if (!kept.length && !data.items.length) throw ApiError.badRequest("An order needs at least one item");
       const previous = productLines(sale.items);
       await moveStock(previous, 1);
       let lines: ISaleItem[];
@@ -121,7 +122,6 @@ class SaleService {
     }
     if (data.notes !== undefined) sale.notes = data.notes;
 
-    if (!sale.items.length) throw ApiError.badRequest("An order needs at least one item");
     recalculateOrder(sale);
     await sale.save();
     return sale.populate(["customer", "cashier"]);

@@ -20,8 +20,8 @@ import {
 } from "class-validator";
 import { Type } from "class-transformer";
 import { PaymentMethod, Currency, OrderSource } from "../models/sale.model";
+import { IsCalendarDate } from "./validators";
 
-const DATE = /^\d{4}-\d{2}-\d{2}$/;
 const STATUS_LIST = /^(pending|paid|cancelled)(,(pending|paid|cancelled))*$/;
 
 export class SaleItemDto {
@@ -191,20 +191,20 @@ export class ListOrdersQueryDto {
 
   /** YYYY-MM-DD in the lounge timezone (inclusive) */
   @IsOptional()
-  @Matches(DATE, { message: "from must be YYYY-MM-DD" })
+  @IsCalendarDate()
   from?: string;
 
   @IsOptional()
-  @Matches(DATE, { message: "to must be YYYY-MM-DD" })
+  @IsCalendarDate()
   to?: string;
 
   /** Older clients: same as from/to */
   @IsOptional()
-  @Matches(DATE, { message: "startDate must be YYYY-MM-DD" })
+  @IsCalendarDate()
   startDate?: string;
 
   @IsOptional()
-  @Matches(DATE, { message: "endDate must be YYYY-MM-DD" })
+  @IsCalendarDate()
   endDate?: string;
 
   @IsOptional()

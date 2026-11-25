@@ -5,7 +5,7 @@ import { IPC } from "../../models/pc.model";
 import Sale, { ISale, OrderSource, SaleStatus } from "../../models/sale.model";
 import { ApiError } from "../../utils/apiError";
 import { createOrder } from "./orderFactory";
-import { buildGamingLine, findSessionLine, productLines } from "./orderLines";
+import { buildGamingLine, findSessionLine } from "./orderLines";
 import { recalculateOrder } from "./orderPricing";
 
 /** The order side of a gaming session: every session lives on exactly one order. */
@@ -74,6 +74,3 @@ export const detachCancelledSession = async (session: IGamingSession): Promise<v
   }
   await sale.save();
 };
-
-/** True when the order has nothing but gaming lines. */
-export const isGamingOnly = (sale: Pick<ISale, "items">) => productLines(sale.items).length === 0;

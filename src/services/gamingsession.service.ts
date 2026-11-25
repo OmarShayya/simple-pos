@@ -182,15 +182,14 @@ class GamingSessionService {
       return this.getSessionById(sessionId);
     }
 
-    // Legacy standalone session
-    if (session.status === SessionStatus.ACTIVE) {
-      stopSessionClock(session, new Date(), userId);
-      await releaseStation(session.pc);
-    }
+    // Legacy standalone session: nothing is changed if the payment is short
+    const wasRunning = session.status === SessionStatus.ACTIVE;
+    if (wasRunning) stopSessionClock(session, new Date(), userId);
     const due = payment.paymentCurrency === Currency.USD ? session.finalAmount.usd : session.finalAmount.lbp;
     if (payment.amount < due) throw ApiError.badRequest("Insufficient payment amount");
     session.paymentStatus = SessionPaymentStatus.PAID;
     await session.save();
+    if (wasRunning) await releaseStation(session.pc);
     if (session.customer) {
       await customerService.updatePurchaseStats(session.customer.toString(), session.finalAmount.usd);
     }
