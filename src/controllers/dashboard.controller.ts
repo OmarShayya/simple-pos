@@ -3,8 +3,18 @@ import { CustomRequest } from "../types";
 import dashboardService from "../services/dashboard.service";
 import { ApiResponseUtil } from "../utils/apiResponse";
 import { ApiError } from "../utils/apiError";
+import dashboardOverviewService from "../services/dashboardOverview.service";
+import { UserRole } from "../models/user.model";
 
 class DashboardController {
+  async getOverview(req: CustomRequest, res: Response, _next: NextFunction) {
+    const role = req.user!.role as UserRole;
+    const overview = await dashboardOverviewService.getOverview({
+      canViewRevenue: role === UserRole.ADMIN || role === UserRole.MANAGER,
+    });
+    return ApiResponseUtil.success(res, overview, "Dashboard overview retrieved successfully");
+  }
+
   async getTodayStats(req: CustomRequest, res: Response, next: NextFunction) {
     const stats = await dashboardService.getTodayStats();
     return ApiResponseUtil.success(
