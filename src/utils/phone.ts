@@ -1,4 +1,4 @@
-import { CountryCode, isSupportedCountry, parsePhoneNumberFromString } from "libphonenumber-js";
+import { CountryCode, getCountryCallingCode, isSupportedCountry, parsePhoneNumberFromString } from "libphonenumber-js";
 import { ApiError } from "./apiError";
 
 /** The lounge is in Lebanon: numbers typed without a country code are Lebanese. */
@@ -27,9 +27,12 @@ const toCountry = (value: string | undefined | null): CountryCode => {
 const tryParse = (text: string, country: CountryCode): NormalizedPhone | null => {
   const parsed = parsePhoneNumberFromString(text, country);
   if (!parsed || !parsed.isValid()) return null;
+  // Several countries share a calling code (+44: GB, GG, JE, IM; +1: US, CA…). When the number fits the
+  // country the person picked, keep their choice instead of the one libphonenumber guesses from the range.
+  const sharesCode = parsed.countryCallingCode === getCountryCallingCode(country);
   return {
     e164: parsed.number,
-    country: parsed.country ?? country,
+    country: sharesCode ? country : (parsed.country ?? country),
     national: String(parsed.nationalNumber),
   };
 };

@@ -24,6 +24,13 @@ export const resolveDiscount = async (discountId: string, placement: DiscountPla
   const discount = await Discount.findById(discountId);
   if (!discount) throw ApiError.notFound(`Discount ${discountId} not found`);
   if (!discount.isActive) throw ApiError.badRequest(`Discount ${discount.name} is not active`);
+  const now = Date.now();
+  if (discount.startDate && discount.startDate.getTime() > now) {
+    throw ApiError.badRequest(`Discount ${discount.name} has not started yet`);
+  }
+  if (discount.endDate && discount.endDate.getTime() < now) {
+    throw ApiError.badRequest(`Discount ${discount.name} has expired`);
+  }
 
   switch (placement.on) {
     case "product": {

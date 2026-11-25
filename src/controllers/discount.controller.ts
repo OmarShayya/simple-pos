@@ -4,6 +4,13 @@ import discountService from "../services/discount.service";
 import { ApiResponseUtil } from "../utils/apiResponse";
 import { DiscountTarget } from "../models/discount.model";
 
+/** targetId may be populated (product/category document) or a bare ObjectId — always return the id. */
+const refId = (value: unknown): string | undefined => {
+  if (!value) return undefined;
+  const doc = value as { _id?: { toString(): string } };
+  return doc._id ? doc._id.toString() : String(value);
+};
+
 class DiscountController {
   async createDiscount(req: CustomRequest, res: Response, next: NextFunction) {
     const userId = req.user?.id;
@@ -19,7 +26,7 @@ class DiscountController {
         type: discount.type,
         value: discount.value,
         target: discount.target,
-        targetId: discount.targetId?.toString(),
+        targetId: refId(discount.targetId),
         isActive: discount.isActive,
         startDate: discount.startDate,
         endDate: discount.endDate,
@@ -49,7 +56,7 @@ class DiscountController {
         type: d.type,
         value: d.value,
         target: d.target,
-        targetId: d.targetId?.toString(),
+        targetId: refId(d.targetId),
         targetDetails: d.targetId,
         isActive: d.isActive,
         startDate: d.startDate,
@@ -77,7 +84,7 @@ class DiscountController {
         type: discount.type,
         value: discount.value,
         target: discount.target,
-        targetId: discount.targetId?.toString(),
+        targetId: refId(discount.targetId),
         targetDetails: discount.targetId,
         isActive: discount.isActive,
         startDate: discount.startDate,
@@ -104,7 +111,7 @@ class DiscountController {
         type: discount.type,
         value: discount.value,
         target: discount.target,
-        targetId: discount.targetId?.toString(),
+        targetId: refId(discount.targetId),
         isActive: discount.isActive,
         startDate: discount.startDate,
         endDate: discount.endDate,
@@ -136,7 +143,7 @@ class DiscountController {
         description: d.description,
         value: d.value,
         target: d.target,
-        targetId: d.targetId?.toString(),
+        targetId: refId(d.targetId),
       })),
       "Active discounts for product retrieved successfully"
     );
