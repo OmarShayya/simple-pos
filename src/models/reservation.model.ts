@@ -25,9 +25,14 @@ export interface IReservation extends Document {
   endTime: Date;
   durationMinutes: number;
   customerName: string;
+  /** E.164 ("+96170123456"); legacy rows that couldn't be parsed keep their original text. */
   customerPhone: string;
-  /** Last 8 digits of the phone, used to match lookups regardless of formatting / country code */
+  /** ISO-3166 alpha-2 of the phone number, e.g. "LB". */
+  phoneCountry?: string;
+  /** Last 8 digits of the phone, used to match legacy rows regardless of formatting / country code */
   phoneKey: string;
+  /** Customer record auto-linked by phone number. */
+  customer?: Types.ObjectId | any;
   customerEmail?: string;
   notes?: string;
   status: ReservationStatus;
@@ -55,7 +60,9 @@ const reservationSchema = new Schema<IReservation>(
     durationMinutes: { type: Number, required: true, min: 1 },
     customerName: { type: String, required: true, trim: true, maxlength: 80 },
     customerPhone: { type: String, required: true, trim: true, maxlength: 30 },
+    phoneCountry: { type: String, trim: true, uppercase: true, maxlength: 2 },
     phoneKey: { type: String, required: true, index: true },
+    customer: { type: Schema.Types.ObjectId, ref: "Customer", index: true },
     customerEmail: { type: String, trim: true, lowercase: true, maxlength: 120 },
     notes: { type: String, trim: true, maxlength: 500 },
     status: {

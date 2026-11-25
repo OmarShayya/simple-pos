@@ -29,15 +29,15 @@ router.get(
 );
 
 router.get(
-  "/:id",
-  authenticate,
-  asyncHandler(customerController.getCustomerById)
-);
-
-router.get(
   "/phone/:phone",
   authenticate,
   asyncHandler(customerController.getCustomerByPhone)
+);
+
+router.get(
+  "/:id",
+  authenticate,
+  asyncHandler(customerController.getCustomerById)
 );
 
 router.put(

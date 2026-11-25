@@ -17,6 +17,7 @@ import {
   ArrayMaxSize,
   ArrayMinSize,
   ValidateNested,
+  Length,
 } from "class-validator";
 import { Type } from "class-transformer";
 import { StationType } from "../models/pc.model";
@@ -54,6 +55,12 @@ export class CreateReservationDto {
   @IsNotEmpty()
   @MaxLength(30)
   customerPhone!: string;
+
+  /** ISO-3166 alpha-2 of the phone number when it's typed without a country code (default "LB"). */
+  @IsOptional()
+  @IsString()
+  @Length(2, 2)
+  phoneCountry?: string;
 
   @IsOptional()
   @IsEmail()
@@ -101,6 +108,12 @@ export class UpdateReservationDto {
   @MaxLength(30)
   customerPhone?: string;
 
+  /** ISO-3166 alpha-2 of the phone number when it's typed without a country code (default "LB"). */
+  @IsOptional()
+  @IsString()
+  @Length(2, 2)
+  phoneCountry?: string;
+
   @IsOptional()
   @IsString()
   @MaxLength(120)
@@ -129,9 +142,16 @@ export class CustomerReservationDto {
   @IsNotEmpty()
   @MaxLength(30)
   phone!: string;
+
+  /** ISO-3166 alpha-2 of the phone number when it's typed without a country code (default "LB"). */
+  @IsOptional()
+  @IsString()
+  @Length(2, 2)
+  phoneCountry?: string;
 }
 
 export class CheckInReservationDto {
+  /** Deprecated: every session now lives on an order. Accepted and ignored. */
   @IsOptional()
   @IsBoolean()
   createSale?: boolean;
