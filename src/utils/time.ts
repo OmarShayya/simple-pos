@@ -82,3 +82,12 @@ export const formatTime = (date: Date, tz: string): string =>
 /** "Tue, Nov 25" in the given timezone. */
 export const formatDay = (date: Date, tz: string): string =>
   new Intl.DateTimeFormat("en-US", { timeZone: tz, weekday: "short", month: "short", day: "numeric" }).format(date);
+
+/** Local hour (0–23) of an instant in `tz`. */
+export const localHour = (date: Date, tz: string): number => +getParts(tz, date).hour % 24;
+
+/** Start (inclusive) and end (exclusive) instants of a local calendar day. */
+export const localDayBounds = (date: string, tz: string): { start: Date; end: Date } => ({
+  start: zonedDateTimeToUtc(date, 0, tz),
+  end: zonedDateTimeToUtc(addDays(date, 1), 0, tz),
+});
