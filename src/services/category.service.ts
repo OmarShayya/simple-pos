@@ -1,18 +1,29 @@
 import Category, { ICategory } from "../models/category.model";
 import { ApiError } from "../utils/apiError";
 
+const escapeRegex = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+/** Case-insensitive exact name match (names may contain regex characters like "(" or "+"). */
+const sameName = (name: string) => ({ $regex: new RegExp(`^${escapeRegex(name.trim())}$`, "i") });
+
 class CategoryService {
   async createCategory(data: {
     name: string;
     description?: string;
     image?: string;
   }): Promise<ICategory> {
-    const existingCategory = await Category.findOne({
-      name: { $regex: new RegExp(`^${data.name}$`, "i") },
-    });
+    const existingCategory = await Category.findOne({ name: sameName(data.name) });
 
-    if (existingCategory) {
+    if (existingCategory?.isActive) {
       throw ApiError.conflict("Category with this name already exists");
+    }
+
+    // A removed category with the same name comes back (keeps its products) instead of a 409
+    if (existingCategory) {
+      existingCategory.isActive = true;
+      existingCategory.name = data.name.trim();
+      if (data.description !== undefined) existingCategory.description = data.description;
+      if (data.image !== undefined) existingCategory.image = data.image;
+      return existingCategory.save();
     }
 
     const category = await Category.create(data);
@@ -39,10 +50,7 @@ class CategoryService {
     updates: { name?: string; description?: string; image?: string }
   ): Promise<ICategory> {
     if (updates.name) {
-      const existingCategory = await Category.findOne({
-        name: { $regex: new RegExp(`^${updates.name}$`, "i") },
-        _id: { $ne: id },
-      });
+      const existingCategory = await Category.findOne({ name: sameName(updates.name), _id: { $ne: id } });
 
       if (existingCategory) {
         throw ApiError.conflict("Category with this name already exists");

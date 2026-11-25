@@ -6,8 +6,12 @@ import { UserRole } from "../models/user.model";
 
 const router = Router();
 
+// New dashboard (any signed-in staff; money totals are hidden from cashiers)
+router.get("/overview", authenticate, asyncHandler(dashboardController.getOverview));
+
+// The previous overview payload, kept for older POS builds
 router.get(
-  "/overview",
+  "/legacy-overview",
   authenticate,
   authorize(UserRole.ADMIN, UserRole.MANAGER),
   asyncHandler(dashboardController.getOverallStats)

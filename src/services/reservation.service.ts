@@ -14,6 +14,7 @@ import ReservationSettings, {
   IReservationSettings,
 } from "../models/reservationSettings.model";
 import { ApiError } from "../utils/apiError";
+import { businessWindow, BusinessWindow } from "../utils/businessHours";
 import logger from "../utils/logger";
 import {
   addDays,
@@ -22,11 +23,12 @@ import {
   isDateString,
   isTimeString,
   localDateString,
-  timeToMinutes,
-  weekdayOf,
   zonedDateTimeToUtc,
 } from "../utils/time";
 import gamingSessionService from "./gamingsession.service";
+import customerService from "./customer.service";
+import { CustomerSource } from "../models/customer.model";
+import { DEFAULT_PHONE_COUNTRY, normalizePhone, phoneKeyOf, requirePhone } from "../utils/phone";
 
 const MINUTE = 60_000;
 /** A station that is busy right now is treated as unavailable for slots starting within this window. */
@@ -37,15 +39,6 @@ const EARLY_CHECKIN_MINUTES = 30;
 const MAX_ACTIVE_PER_PHONE = 3;
 const CODE_ALPHABET = "ABCDEFGHJKMNPQRSTUVWXYZ23456789";
 
-export interface BusinessWindow {
-  date: string;
-  closed: boolean;
-  start: Date;
-  end: Date;
-  open: string;
-  close: string;
-}
-
 export interface CreateReservationInput {
   type: StationType;
   start: string;
@@ -54,6 +47,7 @@ export interface CreateReservationInput {
   stationCount?: number;
   customerName: string;
   customerPhone: string;
+  phoneCountry?: string;
   customerEmail?: string;
   notes?: string;
 }
@@ -64,6 +58,7 @@ export interface UpdateReservationInput {
   stationIds?: string[];
   customerName?: string;
   customerPhone?: string;
+  phoneCountry?: string;
   customerEmail?: string;
   notes?: string;
 }
@@ -85,8 +80,6 @@ export type SettingsUpdate = Partial<
     | "bookableTypes"
   >
 >;
-
-const phoneKeyOf = (phone: string) => phone.replace(/\D/g, "").slice(-8);
 
 const overlaps = (aStart: number, aEnd: number, bStart: number, bEnd: number) => aStart < bEnd && bStart < aEnd;
 
@@ -177,18 +170,7 @@ class ReservationService {
 
   /** Opening window of a business day (a night past midnight belongs to the day it started). */
   getBusinessWindow(settings: IReservationSettings, date: string): BusinessWindow {
-    const day = settings.schedule.find((d) => d.day === weekdayOf(date)) ?? DEFAULT_SCHEDULE[weekdayOf(date)];
-    const openMin = timeToMinutes(day.open);
-    let closeMin = timeToMinutes(day.close);
-    if (closeMin <= openMin) closeMin += 24 * 60;
-    return {
-      date,
-      closed: day.closed,
-      open: day.open,
-      close: day.close,
-      start: zonedDateTimeToUtc(date, openMin, settings.timezone),
-      end: zonedDateTimeToUtc(date, closeMin, settings.timezone),
-    };
+    return businessWindow(settings.schedule, settings.timezone, date);
   }
 
   /** Finds the (open) business window that fully contains [start, end), if any. */
@@ -435,10 +417,9 @@ class ReservationService {
     opts: { staff: boolean; userId?: string }
   ): Promise<IReservation> {
     const name = input.customerName?.trim();
-    const phone = input.customerPhone?.trim();
     if (!name) throw ApiError.badRequest("Name is required");
-    const phoneKey = phoneKeyOf(phone ?? "");
-    if (phoneKey.length < 7) throw ApiError.badRequest("Please enter a valid phone number");
+    const phone = requirePhone(input.customerPhone, input.phoneCountry);
+    const phoneKey = phoneKeyOf(phone.e164);
 
     if (!opts.staff) {
       const active = await Reservation.countDocuments({
@@ -470,7 +451,8 @@ class ReservationService {
       endTime: end,
       durationMinutes: input.durationMinutes,
       customerName: name,
-      customerPhone: phone,
+      customerPhone: phone.e164,
+      phoneCountry: phone.country,
       phoneKey,
       customerEmail: input.customerEmail?.trim() || undefined,
       notes: input.notes?.trim() || undefined,
@@ -480,6 +462,7 @@ class ReservationService {
       createdBy: opts.userId,
     });
     await this.assertNoRace(reservation);
+    await this.linkCustomer(reservation);
 
     logger.info(
       `[RESERVATION] ${reservation.code} confirmed: ${chosen.map((s) => s.pcNumber).join(", ")} ` +
@@ -515,16 +498,18 @@ class ReservationService {
     }
 
     if (input.customerName !== undefined) reservation.customerName = input.customerName.trim();
-    if (input.customerPhone !== undefined) {
-      const key = phoneKeyOf(input.customerPhone);
-      if (key.length < 7) throw ApiError.badRequest("Please enter a valid phone number");
-      reservation.customerPhone = input.customerPhone.trim();
-      reservation.phoneKey = key;
+    const phoneChanged = input.customerPhone !== undefined || input.phoneCountry !== undefined;
+    if (phoneChanged) {
+      const phone = requirePhone(input.customerPhone ?? reservation.customerPhone, input.phoneCountry ?? reservation.phoneCountry);
+      reservation.customerPhone = phone.e164;
+      reservation.phoneCountry = phone.country;
+      reservation.phoneKey = phoneKeyOf(phone.e164);
     }
     if (input.customerEmail !== undefined) reservation.customerEmail = input.customerEmail.trim() || undefined;
     if (input.notes !== undefined) reservation.notes = input.notes.trim() || undefined;
 
     await reservation.save();
+    if (phoneChanged || !reservation.customer) await this.linkCustomer(reservation);
     return reservation.populate("stations");
   }
 
@@ -597,18 +582,47 @@ class ReservationService {
     return map;
   }
 
-  async lookup(code: string, phone: string): Promise<IReservation> {
+  /**
+   * Finds a booking by code + phone, whatever format the phone is typed in.
+   * Normalized rows compare E.164 numbers; legacy rows fall back to the last 8 digits.
+   */
+  async lookup(code: string, phone: string, phoneCountry?: string): Promise<IReservation> {
     const r = await Reservation.findOne({ code: (code || "").trim().toUpperCase() }).populate("stations");
-    if (!r || r.phoneKey !== phoneKeyOf(phone || "")) {
+    if (!r || !this.phoneMatches(r, phone || "", phoneCountry)) {
       throw ApiError.notFound("We couldn't find a booking with that code and phone number");
     }
     return r;
   }
 
+  private phoneMatches(r: IReservation, input: string, phoneCountry?: string): boolean {
+    if (r.customerPhone?.startsWith("+")) {
+      const typed = normalizePhone(input, phoneCountry || r.phoneCountry || DEFAULT_PHONE_COUNTRY);
+      if (typed) return typed.e164 === r.customerPhone;
+    }
+    const key = phoneKeyOf(input);
+    return key.length >= 7 && key === r.phoneKey;
+  }
+
+  /** Links the booking to a customer record (created on first booking). Never fails the booking. */
+  private async linkCustomer(r: IReservation): Promise<void> {
+    try {
+      const customer = await customerService.findOrCreateByPhone(
+        { name: r.customerName, phone: r.customerPhone, phoneCountry: r.phoneCountry, email: r.customerEmail },
+        { source: CustomerSource.RESERVATION }
+      );
+      if (r.customer?.toString() !== customer._id.toString()) {
+        r.customer = customer._id;
+        await Reservation.updateOne({ _id: r._id }, { $set: { customer: customer._id } });
+      }
+    } catch (error) {
+      logger.error(`[RESERVATION] Could not link ${r.code} to a customer`, error);
+    }
+  }
+
   // ---------------------------------------------------------------- status changes
 
-  async cancelByCustomer(code: string, phone: string): Promise<IReservation> {
-    const r = await this.lookup(code, phone);
+  async cancelByCustomer(code: string, phone: string, phoneCountry?: string): Promise<IReservation> {
+    const r = await this.lookup(code, phone, phoneCountry);
     if (r.status !== ReservationStatus.CONFIRMED) throw ApiError.badRequest("This booking can no longer be cancelled");
     if (r.startTime.getTime() <= Date.now()) throw ApiError.badRequest("This booking has already started");
     r.status = ReservationStatus.CANCELLED;
@@ -640,7 +654,7 @@ class ReservationService {
   }
 
   /** Customer arrived: start a gaming session on every reserved station. */
-  async checkIn(id: string, userId: string, opts: { createSale?: boolean } = {}): Promise<IReservation> {
+  async checkIn(id: string, userId: string): Promise<IReservation> {
     const r = await this.getById(id);
     if (r.status !== ReservationStatus.CONFIRMED) {
       throw ApiError.badRequest(
@@ -666,10 +680,11 @@ class ReservationService {
 
     const sessionIds: Types.ObjectId[] = [];
     for (const st of stations) {
+      // Each station gets its own order so friends can pay separately
       const session = await gamingSessionService.startSession(userId, {
         pcId: st._id.toString(),
+        customerId: r.customer ? r.customer.toString() : undefined,
         customerName: r.customerName,
-        createSale: opts.createSale,
         notes: `Reservation ${r.code}`,
       });
       sessionIds.push(session._id);
@@ -754,6 +769,8 @@ class ReservationService {
       durationMinutes: r.durationMinutes,
       customerName: r.customerName,
       customerPhone: r.customerPhone,
+      phoneCountry: r.phoneCountry,
+      customerId: r.customer ? r.customer.toString() : null,
       customerEmail: r.customerEmail,
       notes: r.notes,
       estimatedCost: r.estimatedCost,

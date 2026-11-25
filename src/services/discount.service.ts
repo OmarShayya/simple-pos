@@ -202,10 +202,10 @@ class DiscountService {
         },
         { isActive: true },
         {
-          $or: [{ startDate: { $exists: false } }, { startDate: { $lte: now } }],
+          $or: [{ startDate: null }, { startDate: { $lte: now } }],
         },
         {
-          $or: [{ endDate: { $exists: false } }, { endDate: { $gte: now } }],
+          $or: [{ endDate: null }, { endDate: { $gte: now } }],
         },
       ],
     }).sort({ value: -1 }); // Sort by highest discount first
@@ -221,10 +221,10 @@ class DiscountService {
         { target: DiscountTarget.GAMING_SESSION },
         { isActive: true },
         {
-          $or: [{ startDate: { $exists: false } }, { startDate: { $lte: now } }],
+          $or: [{ startDate: null }, { startDate: { $lte: now } }],
         },
         {
-          $or: [{ endDate: { $exists: false } }, { endDate: { $gte: now } }],
+          $or: [{ endDate: null }, { endDate: { $gte: now } }],
         },
       ],
     }).sort({ value: -1 });
@@ -240,10 +240,10 @@ class DiscountService {
         { target: DiscountTarget.SALE },
         { isActive: true },
         {
-          $or: [{ startDate: { $exists: false } }, { startDate: { $lte: now } }],
+          $or: [{ startDate: null }, { startDate: { $lte: now } }],
         },
         {
-          $or: [{ endDate: { $exists: false } }, { endDate: { $gte: now } }],
+          $or: [{ endDate: null }, { endDate: { $gte: now } }],
         },
       ],
     }).sort({ value: -1 });

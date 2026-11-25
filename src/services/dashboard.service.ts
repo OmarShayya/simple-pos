@@ -1,21 +1,28 @@
 import Sale, { SaleStatus } from "../models/sale.model";
 import Product, { ProductType } from "../models/product.model";
-import Category from "../models/category.model";
 import Customer from "../models/customer.model";
 import GamingSession, {
   SessionStatus,
   SessionPaymentStatus,
 } from "../models/gamingsession.model";
+import { Money } from "../utils/money";
+import { localDateRange, TimeRange } from "../utils/period";
+import { localDateString } from "../utils/time";
+import { getLoungeTimezone } from "./loungeSettings";
+import { average, revenueTotals } from "./reports/ledgerAggregates";
+import { LedgerEntry, loadLedger } from "./reports/revenueLedger";
 
-interface RevenueBreakdown {
-  usd: number;
-  lbp: number;
-}
+/*
+ * Audit note (orders overhaul): these endpoints used to add paid session revenue on top of paid
+ * sales that already contained the same sessions as "SESSION-" lines (double counting), and
+ * classified those lines as products because their `product` held the station id. Revenue now comes
+ * from the shared revenue ledger (paid orders by payment time, lounge timezone, sessions once).
+ */
 
 interface SeparatedRevenue {
-  total: RevenueBreakdown;
-  products: RevenueBreakdown;  // Physical products (non-gaming)
-  gaming: RevenueBreakdown;    // Gaming category products + gaming sessions
+  total: Money;
+  products: Money; // Menu products
+  gaming: Money; // Station time
 }
 
 interface DailySales {
@@ -23,8 +30,8 @@ interface DailySales {
   totalSales: number;
   revenue: SeparatedRevenue;
   itemsSold: number;
-  productSales: number;   // Number of product-only sales
-  gamingSales: number;    // Number of gaming-related sales
+  productSales: number; // Orders with at least one product line
+  gamingSales: number; // Orders with at least one gaming line
 }
 
 interface RevenueStats {
@@ -32,41 +39,27 @@ interface RevenueStats {
   totalSales: number;
   productSales: number;
   gamingSales: number;
-  averageSaleValue: RevenueBreakdown;
+  averageSaleValue: Money;
   itemsSold: number;
 }
 
+const separated = (entries: LedgerEntry[]): SeparatedRevenue => {
+  const t = revenueTotals(entries);
+  return { total: t.revenue, products: t.products, gaming: t.gaming };
+};
+
+const countByKind = (entries: LedgerEntry[]) => ({
+  productSales: entries.filter((e) => e.lines.some((l) => l.kind === "product")).length,
+  gamingSales: entries.filter((e) => e.lines.some((l) => l.kind === "gaming")).length,
+  itemsSold: entries.reduce((n, e) => n + e.lines.filter((l) => l.kind === "product").reduce((q, l) => q + l.quantity, 0), 0),
+});
+
 class DashboardService {
-  // Cache gaming category ID
-  private gamingCategoryId: string | null = null;
-
-  private async getGamingCategoryId(): Promise<string | null> {
-    if (this.gamingCategoryId) return this.gamingCategoryId;
-
-    const gamingCategory = await Category.findOne({
-      name: { $regex: /^gaming$/i },
-      isActive: true
-    });
-
-    if (gamingCategory) {
-      this.gamingCategoryId = gamingCategory._id.toString();
-    }
-    return this.gamingCategoryId;
-  }
-
-  private async getGamingProductIds(): Promise<Set<string>> {
-    const gamingCategoryId = await this.getGamingCategoryId();
-    if (!gamingCategoryId) return new Set();
-
-    const gamingProducts = await Product.find({
-      $or: [
-        { category: gamingCategoryId },
-        { productType: ProductType.SERVICE }
-      ],
-      isActive: true
-    }).select('_id');
-
-    return new Set(gamingProducts.map(p => p._id.toString()));
+  private async todayRange(): Promise<{ tz: string; range: TimeRange }> {
+    const tz = await getLoungeTimezone();
+    const today = localDateString(new Date(), tz);
+    const { start, end } = localDateRange(tz, today, today);
+    return { tz, range: { start: start!, end: end! } };
   }
 
   async getTodayStats(): Promise<{
@@ -80,217 +73,38 @@ class DashboardService {
     newCustomers: number;
     gamingSessions: number;
   }> {
-    const today = new Date();
-    today.setHours(0, 0, 0, 0);
-    const tomorrow = new Date(today);
-    tomorrow.setDate(tomorrow.getDate() + 1);
-
-    const [sales, newCustomers, gamingSessions, gamingProductIds] = await Promise.all([
-      Sale.find({
-        createdAt: { $gte: today, $lt: tomorrow },
-        status: { $ne: SaleStatus.CANCELLED },
-      }),
-      Customer.countDocuments({
-        createdAt: { $gte: today, $lt: tomorrow },
-      }),
-      GamingSession.find({
-        startTime: { $gte: today, $lt: tomorrow },
-        status: SessionStatus.COMPLETED,
-        paymentStatus: SessionPaymentStatus.PAID,
-      }),
-      this.getGamingProductIds(),
+    const { range } = await this.todayRange();
+    const created = { $gte: range.start, $lt: range.end };
+    const [entries, totalSales, pendingSales, newCustomers, gamingSessions] = await Promise.all([
+      loadLedger(range),
+      Sale.countDocuments({ createdAt: created, status: { $ne: SaleStatus.CANCELLED } }),
+      Sale.countDocuments({ createdAt: created, status: SaleStatus.PENDING }),
+      Customer.countDocuments({ createdAt: created }),
+      GamingSession.countDocuments({ startTime: created, status: { $ne: SessionStatus.CANCELLED } }),
     ]);
 
-    const paidSales = sales.filter((s) => s.status === SaleStatus.PAID);
-    const pendingSalesArr = sales.filter((s) => s.status === SaleStatus.PENDING);
-
-    // Calculate separated revenue from sales
-    const salesRevenue = this.calculateSeparatedRevenue(paidSales, gamingProductIds);
-
-    // Add gaming session revenue to gaming total
-    const gamingSessionRevenue = gamingSessions.reduce(
-      (acc, session) => ({
-        usd: acc.usd + (session.finalAmount?.usd || session.totalCost?.usd || 0),
-        lbp: acc.lbp + (session.finalAmount?.lbp || session.totalCost?.lbp || 0),
-      }),
-      { usd: 0, lbp: 0 }
-    );
-
-    const revenue: SeparatedRevenue = {
-      total: {
-        usd: salesRevenue.total.usd + gamingSessionRevenue.usd,
-        lbp: salesRevenue.total.lbp + gamingSessionRevenue.lbp,
-      },
-      products: salesRevenue.products,
-      gaming: {
-        usd: salesRevenue.gaming.usd + gamingSessionRevenue.usd,
-        lbp: salesRevenue.gaming.lbp + gamingSessionRevenue.lbp,
-      },
-    };
-
-    const itemsSold = paidSales.reduce(
-      (acc, sale) =>
-        acc + sale.items.reduce((sum, item) => sum + item.quantity, 0),
-      0
-    );
-
-    // Count sales by type
-    const { productSales, gamingSales } = this.countSalesByType(paidSales, gamingProductIds);
-
     return {
-      revenue,
-      totalSales: sales.length,
-      pendingSales: pendingSalesArr.length,
-      paidSales: paidSales.length,
-      productSales,
-      gamingSales: gamingSales + gamingSessions.length,
-      itemsSold,
+      revenue: separated(entries),
+      totalSales,
+      pendingSales,
+      paidSales: entries.length,
+      ...countByKind(entries),
       newCustomers,
-      gamingSessions: gamingSessions.length,
+      gamingSessions,
     };
-  }
-
-  private calculateSeparatedRevenue(
-    sales: any[],
-    gamingProductIds: Set<string>
-  ): SeparatedRevenue {
-    const result: SeparatedRevenue = {
-      total: { usd: 0, lbp: 0 },
-      products: { usd: 0, lbp: 0 },
-      gaming: { usd: 0, lbp: 0 },
-    };
-
-    for (const sale of sales) {
-      for (const item of sale.items) {
-        const isGaming = gamingProductIds.has(item.product.toString());
-        const itemRevenue = item.finalAmount || item.subtotal;
-
-        if (isGaming) {
-          result.gaming.usd += itemRevenue.usd;
-          result.gaming.lbp += itemRevenue.lbp;
-        } else {
-          result.products.usd += itemRevenue.usd;
-          result.products.lbp += itemRevenue.lbp;
-        }
-        result.total.usd += itemRevenue.usd;
-        result.total.lbp += itemRevenue.lbp;
-      }
-    }
-
-    return result;
-  }
-
-  private countSalesByType(
-    sales: any[],
-    gamingProductIds: Set<string>
-  ): { productSales: number; gamingSales: number } {
-    let productSales = 0;
-    let gamingSales = 0;
-
-    for (const sale of sales) {
-      const hasGamingItem = sale.items.some((item: any) =>
-        gamingProductIds.has(item.product.toString())
-      );
-      const hasProductItem = sale.items.some((item: any) =>
-        !gamingProductIds.has(item.product.toString())
-      );
-
-      // A sale can count as both if it has mixed items
-      if (hasProductItem) productSales++;
-      if (hasGamingItem) gamingSales++;
-    }
-
-    return { productSales, gamingSales };
   }
 
   async getDailySales(startDate: Date, endDate: Date): Promise<DailySales[]> {
-    const [sales, gamingSessions, gamingProductIds] = await Promise.all([
-      Sale.find({
-        createdAt: { $gte: startDate, $lte: endDate },
-        status: SaleStatus.PAID,
-      }),
-      GamingSession.find({
-        startTime: { $gte: startDate, $lte: endDate },
-        status: SessionStatus.COMPLETED,
-        paymentStatus: SessionPaymentStatus.PAID,
-      }),
-      this.getGamingProductIds(),
-    ]);
-
-    // Group sales by date
-    const dailyData = new Map<string, {
-      sales: any[];
-      gamingSessions: any[];
-    }>();
-
-    // Group sales by date
-    for (const sale of sales) {
-      const date = sale.createdAt.toISOString().split('T')[0];
-      if (!dailyData.has(date)) {
-        dailyData.set(date, { sales: [], gamingSessions: [] });
-      }
-      dailyData.get(date)!.sales.push(sale);
+    const tz = await getLoungeTimezone();
+    const entries = await loadLedger({ start: startDate, end: new Date(endDate.getTime() + 1) });
+    const byDay = new Map<string, LedgerEntry[]>();
+    for (const e of entries) {
+      const day = localDateString(e.at, tz);
+      byDay.set(day, [...(byDay.get(day) ?? []), e]);
     }
-
-    // Group gaming sessions by date
-    for (const session of gamingSessions) {
-      const date = session.startTime.toISOString().split('T')[0];
-      if (!dailyData.has(date)) {
-        dailyData.set(date, { sales: [], gamingSessions: [] });
-      }
-      dailyData.get(date)!.gamingSessions.push(session);
-    }
-
-    // Calculate daily stats
-    const result: DailySales[] = [];
-    const sortedDates = Array.from(dailyData.keys()).sort();
-
-    for (const date of sortedDates) {
-      const dayData = dailyData.get(date)!;
-
-      // Calculate separated revenue from sales
-      const salesRevenue = this.calculateSeparatedRevenue(dayData.sales, gamingProductIds);
-
-      // Add gaming session revenue
-      const sessionRevenue = dayData.gamingSessions.reduce(
-        (acc, session) => ({
-          usd: acc.usd + (session.finalAmount?.usd || session.totalCost?.usd || 0),
-          lbp: acc.lbp + (session.finalAmount?.lbp || session.totalCost?.lbp || 0),
-        }),
-        { usd: 0, lbp: 0 }
-      );
-
-      const revenue: SeparatedRevenue = {
-        total: {
-          usd: salesRevenue.total.usd + sessionRevenue.usd,
-          lbp: salesRevenue.total.lbp + sessionRevenue.lbp,
-        },
-        products: salesRevenue.products,
-        gaming: {
-          usd: salesRevenue.gaming.usd + sessionRevenue.usd,
-          lbp: salesRevenue.gaming.lbp + sessionRevenue.lbp,
-        },
-      };
-
-      const itemsSold = dayData.sales.reduce(
-        (acc, sale) =>
-          acc + sale.items.reduce((sum: number, item: any) => sum + item.quantity, 0),
-        0
-      );
-
-      const { productSales, gamingSales } = this.countSalesByType(dayData.sales, gamingProductIds);
-
-      result.push({
-        date,
-        totalSales: dayData.sales.length + dayData.gamingSessions.length,
-        revenue,
-        itemsSold,
-        productSales,
-        gamingSales: gamingSales + dayData.gamingSessions.length,
-      });
-    }
-
-    return result;
+    return [...byDay.entries()]
+      .sort((a, b) => a[0].localeCompare(b[0]))
+      .map(([date, list]) => ({ date, totalSales: list.length, revenue: separated(list), ...countByKind(list) }));
   }
 
   async getWeeklyStats(): Promise<RevenueStats> {
@@ -309,73 +123,18 @@ class DashboardService {
     return this.getRevenueStats(monthAgo, today);
   }
 
-  async getCustomDateRangeStats(
-    startDate: Date,
-    endDate: Date
-  ): Promise<RevenueStats> {
+  async getCustomDateRangeStats(startDate: Date, endDate: Date): Promise<RevenueStats> {
     return this.getRevenueStats(startDate, endDate);
   }
 
-  private async getRevenueStats(
-    startDate: Date,
-    endDate: Date
-  ): Promise<RevenueStats> {
-    const [sales, gamingSessions, gamingProductIds] = await Promise.all([
-      Sale.find({
-        createdAt: { $gte: startDate, $lte: endDate },
-        status: SaleStatus.PAID,
-      }),
-      GamingSession.find({
-        startTime: { $gte: startDate, $lte: endDate },
-        status: SessionStatus.COMPLETED,
-        paymentStatus: SessionPaymentStatus.PAID,
-      }),
-      this.getGamingProductIds(),
-    ]);
-
-    // Calculate separated revenue from sales
-    const salesRevenue = this.calculateSeparatedRevenue(sales, gamingProductIds);
-
-    // Add gaming session revenue
-    const sessionRevenue = gamingSessions.reduce(
-      (acc, session) => ({
-        usd: acc.usd + (session.finalAmount?.usd || session.totalCost?.usd || 0),
-        lbp: acc.lbp + (session.finalAmount?.lbp || session.totalCost?.lbp || 0),
-      }),
-      { usd: 0, lbp: 0 }
-    );
-
-    const totalRevenue: SeparatedRevenue = {
-      total: {
-        usd: salesRevenue.total.usd + sessionRevenue.usd,
-        lbp: salesRevenue.total.lbp + sessionRevenue.lbp,
-      },
-      products: salesRevenue.products,
-      gaming: {
-        usd: salesRevenue.gaming.usd + sessionRevenue.usd,
-        lbp: salesRevenue.gaming.lbp + sessionRevenue.lbp,
-      },
-    };
-
-    const itemsSold = sales.reduce(
-      (acc, sale) =>
-        acc + sale.items.reduce((sum, item) => sum + item.quantity, 0),
-      0
-    );
-
-    const { productSales, gamingSales } = this.countSalesByType(sales, gamingProductIds);
-    const totalSales = sales.length + gamingSessions.length;
-
+  private async getRevenueStats(startDate: Date, endDate: Date): Promise<RevenueStats> {
+    const entries = await loadLedger({ start: startDate, end: new Date(endDate.getTime() + 1) });
+    const revenue = separated(entries);
     return {
-      totalRevenue,
-      totalSales,
-      productSales,
-      gamingSales: gamingSales + gamingSessions.length,
-      averageSaleValue: {
-        usd: totalSales > 0 ? totalRevenue.total.usd / totalSales : 0,
-        lbp: totalSales > 0 ? totalRevenue.total.lbp / totalSales : 0,
-      },
-      itemsSold,
+      totalRevenue: revenue,
+      totalSales: entries.length,
+      ...countByKind(entries),
+      averageSaleValue: average(revenue.total, entries.length),
     };
   }
 
@@ -395,6 +154,9 @@ class DashboardService {
       },
       {
         $unwind: "$items",
+      },
+      {
+        $match: { "items.kind": { $ne: "gaming" }, "items.product": { $ne: null } },
       },
       {
         $group: {
@@ -665,46 +427,19 @@ class DashboardService {
     completedToday: number;
     unpaidSessions: number;
   }> {
-    const today = new Date();
-    today.setHours(0, 0, 0, 0);
-    const tomorrow = new Date(today);
-    tomorrow.setDate(tomorrow.getDate() + 1);
-
-    const sessions = await GamingSession.find({
-      startTime: { $gte: today, $lt: tomorrow },
-    });
-
-    const paidSessions = sessions.filter(
-      (s) => s.paymentStatus === SessionPaymentStatus.PAID
-    );
-
-    const todayRevenue = paidSessions.reduce(
-      (acc, session) => ({
-        usd: acc.usd + (session.totalCost?.usd || 0),
-        lbp: acc.lbp + (session.totalCost?.lbp || 0),
-      }),
-      { usd: 0, lbp: 0 }
-    );
-
-    const activeSessions = sessions.filter(
-      (s) => s.status === SessionStatus.ACTIVE
-    ).length;
-
-    const completedToday = sessions.filter(
-      (s) => s.status === SessionStatus.COMPLETED
-    ).length;
-
-    const unpaidSessions = sessions.filter(
-      (s) =>
-        s.status === SessionStatus.COMPLETED &&
-        s.paymentStatus === SessionPaymentStatus.UNPAID
-    ).length;
-
+    const { range } = await this.todayRange();
+    const [entries, sessions] = await Promise.all([
+      loadLedger(range),
+      GamingSession.find({ startTime: { $gte: range.start, $lt: range.end } }).select("status paymentStatus"),
+    ]);
     return {
-      todayRevenue,
-      activeSessions,
-      completedToday,
-      unpaidSessions,
+      // Station time paid today (ledger gaming lines), not session totals
+      todayRevenue: revenueTotals(entries).gaming,
+      activeSessions: await GamingSession.countDocuments({ status: SessionStatus.ACTIVE }),
+      completedToday: sessions.filter((s) => s.status === SessionStatus.COMPLETED).length,
+      unpaidSessions: sessions.filter(
+        (s) => s.status === SessionStatus.COMPLETED && s.paymentStatus === SessionPaymentStatus.UNPAID
+      ).length,
     };
   }
 }

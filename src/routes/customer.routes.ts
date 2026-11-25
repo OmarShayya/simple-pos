@@ -1,12 +1,13 @@
 import { Router } from "express";
 import customerController from "../controllers/customer.controller";
-import { validateDto } from "../middlewares/validation";
+import { validateDto, validateQuery } from "../middlewares/validation";
 import { asyncHandler } from "../middlewares/asyncHandler";
 import { authenticate, authorize } from "../middlewares/auth.middleware";
 import {
   CreateCustomerDto,
   UpdateCustomerDto,
   UpdateBalanceDto,
+  ListCustomersQueryDto,
 } from "../dtos/customer.dto";
 import { UserRole } from "../models/user.model";
 
@@ -19,7 +20,7 @@ router.post(
   asyncHandler(customerController.createCustomer)
 );
 
-router.get("/", authenticate, asyncHandler(customerController.getAllCustomers));
+router.get("/", authenticate, validateQuery(ListCustomersQueryDto), asyncHandler(customerController.getAllCustomers));
 
 router.get(
   "/top",
@@ -29,15 +30,21 @@ router.get(
 );
 
 router.get(
-  "/:id",
-  authenticate,
-  asyncHandler(customerController.getCustomerById)
-);
-
-router.get(
   "/phone/:phone",
   authenticate,
   asyncHandler(customerController.getCustomerByPhone)
+);
+
+router.get(
+  "/:id/activity",
+  authenticate,
+  asyncHandler(customerController.getActivity)
+);
+
+router.get(
+  "/:id",
+  authenticate,
+  asyncHandler(customerController.getCustomerById)
 );
 
 router.put(

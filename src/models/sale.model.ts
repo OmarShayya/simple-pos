@@ -1,4 +1,5 @@
 import mongoose, { Schema, Document, Types } from "mongoose";
+import { StationType } from "./pc.model";
 
 export enum SaleStatus {
   PENDING = "pending",
@@ -17,99 +18,94 @@ export enum Currency {
   LBP = "LBP",
 }
 
+/** Where the order was placed. */
+export enum OrderSource {
+  POS = "pos",
+  WEBSITE = "website",
+}
+
+/** What a line on the order is: a product from the menu or time on a gaming station. */
+export enum SaleItemKind {
+  PRODUCT = "product",
+  GAMING = "gaming",
+}
+
+export interface IAmount {
+  usd: number;
+  lbp: number;
+}
+
+export interface IAppliedDiscount {
+  discountId: Types.ObjectId;
+  discountName: string;
+  percentage: number;
+  amount: IAmount;
+}
+
+export interface ISaleItemStation {
+  id: Types.ObjectId;
+  pcNumber: string;
+  name: string;
+  type: StationType;
+}
+
 export interface ISaleItem {
-  product: Types.ObjectId | any;
+  kind: SaleItemKind;
+  /** Product ref (product lines only). Legacy gaming lines wrongly stored the station id here. */
+  product?: Types.ObjectId | any;
+  /** "Pepsi" — or for gaming lines "PC-05 · 1h 30m" */
   productName: string;
-  productSku?: string;  // Optional - service products don't have SKUs
+  /** Optional — service products don't have SKUs. Gaming lines use "SESSION-<sessionNumber>". */
+  productSku?: string;
   quantity: number;
-  unitPrice: {
-    usd: number;
-    lbp: number;
-  };
-  discount?: {
-    discountId: Types.ObjectId;
-    discountName: string;
-    percentage: number;
-    amount: {
-      usd: number;
-      lbp: number;
-    };
-  };
-  subtotal: {
-    usd: number;
-    lbp: number;
-  };
-  finalAmount: {
-    usd: number;
-    lbp: number;
-  };
+  unitPrice: IAmount;
+  discount?: IAppliedDiscount;
+  subtotal: IAmount;
+  finalAmount: IAmount;
+  /** Gaming lines only */
+  gamingSession?: Types.ObjectId;
+  station?: ISaleItemStation;
+  durationMinutes?: number;
 }
 
 export interface ISale extends Document {
   _id: Types.ObjectId;
   invoiceNumber: string;
+  source: OrderSource;
   customer?: Types.ObjectId | any; // Can be ObjectId or populated Customer
+  /** Snapshot of who the order is for (customer name, or the name typed when starting a session). */
+  customerName?: string;
   items: ISaleItem[];
-  subtotalBeforeDiscount: {
-    usd: number;
-    lbp: number;
-  };
-  saleDiscount?: {
-    discountId: Types.ObjectId;
-    discountName: string;
-    percentage: number;
-    amount: {
-      usd: number;
-      lbp: number;
-    };
-  };
-  totalItemDiscounts: {
-    usd: number;
-    lbp: number;
-  };
-  totals: {
-    usd: number;
-    lbp: number;
-  };
+  subtotalBeforeDiscount: IAmount;
+  saleDiscount?: IAppliedDiscount;
+  totalItemDiscounts: IAmount;
+  totals: IAmount;
   paymentMethod?: PaymentMethod;
   paymentCurrency?: Currency;
-  amountPaid: {
-    usd: number;
-    lbp: number;
-  };
+  amountPaid: IAmount;
   status: SaleStatus;
-  cashier: Types.ObjectId | any; // Can be ObjectId or populated User
+  /** Staff member who created the order. Website orders have none. */
+  cashier?: Types.ObjectId | any;
+  /** Staff member who took the payment. */
+  paidBy?: Types.ObjectId | any;
   notes?: string;
   paidAt?: Date;
   createdAt: Date;
   updatedAt: Date;
 }
 
-const saleItemSchema = new Schema<ISaleItem>(
-  {
-    product: {
-      type: Schema.Types.ObjectId,
-      ref: "Product",
-      required: true,
-    },
-    productName: {
-      type: String,
-      required: true,
-    },
-    productSku: {
-      type: String,
-      required: false,  // Optional - service products don't have SKUs
-    },
-    quantity: {
-      type: Number,
-      required: true,
-      min: 1,
-    },
-    unitPrice: {
-      usd: { type: Number, required: true },
-      lbp: { type: Number, required: true },
-    },
-    discount: {
+/** Plain (lean / toObject) shape of an order. */
+export type SaleRecord = Omit<ISale, keyof Document> & { _id: Types.ObjectId };
+
+const amountSchema = {
+  usd: { type: Number, required: true },
+  lbp: { type: Number, required: true },
+};
+
+/** Optional sub-document: absent when no discount is applied (older rows may hold an empty shell). */
+const discountSchema = {
+  type: new Schema<IAppliedDiscount>(
+    {
       discountId: { type: Schema.Types.ObjectId, ref: "Discount" },
       discountName: { type: String },
       percentage: { type: Number, min: 0, max: 100 },
@@ -118,14 +114,56 @@ const saleItemSchema = new Schema<ISaleItem>(
         lbp: { type: Number, default: 0 },
       },
     },
-    subtotal: {
-      usd: { type: Number, required: true },
-      lbp: { type: Number, required: true },
+    { _id: false }
+  ),
+  required: false,
+};
+
+const saleItemSchema = new Schema<ISaleItem>(
+  {
+    kind: {
+      type: String,
+      enum: Object.values(SaleItemKind),
+      default: SaleItemKind.PRODUCT,
     },
-    finalAmount: {
-      usd: { type: Number, required: true },
-      lbp: { type: Number, required: true },
+    product: {
+      type: Schema.Types.ObjectId,
+      ref: "Product",
+      required: function (this: ISaleItem) {
+        return this.kind !== SaleItemKind.GAMING;
+      },
     },
+    productName: {
+      type: String,
+      required: true,
+    },
+    productSku: {
+      type: String,
+      required: false, // Optional - service products don't have SKUs
+    },
+    quantity: {
+      type: Number,
+      required: true,
+      min: 1,
+    },
+    unitPrice: amountSchema,
+    discount: discountSchema,
+    subtotal: amountSchema,
+    finalAmount: amountSchema,
+    gamingSession: { type: Schema.Types.ObjectId, ref: "GamingSession" },
+    station: {
+      type: new Schema<ISaleItemStation>(
+        {
+          id: { type: Schema.Types.ObjectId, ref: "PC" },
+          pcNumber: { type: String },
+          name: { type: String },
+          type: { type: String, enum: Object.values(StationType) },
+        },
+        { _id: false }
+      ),
+      required: false,
+    },
+    durationMinutes: { type: Number, min: 0 },
   },
   { _id: false }
 );
@@ -137,10 +175,16 @@ const saleSchema = new Schema<ISale>(
       required: true,
       unique: true,
     },
+    source: {
+      type: String,
+      enum: Object.values(OrderSource),
+      default: OrderSource.POS,
+    },
     customer: {
       type: Schema.Types.ObjectId,
       ref: "Customer",
     },
+    customerName: { type: String, trim: true, maxlength: 100 },
     items: {
       type: [saleItemSchema],
       required: true,
@@ -153,15 +197,7 @@ const saleSchema = new Schema<ISale>(
       usd: { type: Number, required: true, min: 0 },
       lbp: { type: Number, required: true, min: 0 },
     },
-    saleDiscount: {
-      discountId: { type: Schema.Types.ObjectId, ref: "Discount" },
-      discountName: { type: String },
-      percentage: { type: Number, min: 0, max: 100 },
-      amount: {
-        usd: { type: Number, default: 0 },
-        lbp: { type: Number, default: 0 },
-      },
-    },
+    saleDiscount: discountSchema,
     totalItemDiscounts: {
       usd: { type: Number, default: 0, min: 0 },
       lbp: { type: Number, default: 0, min: 0 },
@@ -190,7 +226,10 @@ const saleSchema = new Schema<ISale>(
     cashier: {
       type: Schema.Types.ObjectId,
       ref: "User",
-      required: true,
+    },
+    paidBy: {
+      type: Schema.Types.ObjectId,
+      ref: "User",
     },
     notes: {
       type: String,
@@ -206,8 +245,11 @@ const saleSchema = new Schema<ISale>(
 );
 
 saleSchema.index({ customer: 1 });
-saleSchema.index({ status: 1 });
+saleSchema.index({ status: 1, createdAt: -1 });
+saleSchema.index({ source: 1, status: 1 });
 saleSchema.index({ createdAt: -1 });
+saleSchema.index({ status: 1, paidAt: 1 });
 saleSchema.index({ cashier: 1 });
+saleSchema.index({ "items.gamingSession": 1 });
 
 export default mongoose.model<ISale>("Sale", saleSchema);

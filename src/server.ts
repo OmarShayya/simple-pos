@@ -6,16 +6,15 @@ import logger from "./utils/logger";
 import { connectDatabase } from "./config/database";
 import exchangeRateService from "./services/exchangeRate.service";
 import socketService from "./services/socket.service";
-import pcService from "./services/pc.service";
 import reservationService from "./services/reservation.service";
+import { runStartupMigrations } from "./migrations";
 
 const startServer = async () => {
   try {
     await connectDatabase();
     await exchangeRateService.initializeFromDatabase();
 
-    const migrated = await pcService.backfillStationTypes();
-    if (migrated) logger.info(`Marked ${migrated} existing station(s) as type "pc"`);
+    await runStartupMigrations();
     reservationService.startScheduler();
 
     const httpServer = createServer(app);

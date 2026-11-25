@@ -1,62 +1,67 @@
+import type { OrderTypeFilter } from "../services/orders/orderQuery";
 import { Response, NextFunction } from "express";
 import { CustomRequest } from "../types";
 import saleService from "../services/sale.service";
 import { ApiResponseUtil } from "../utils/apiResponse";
-import { CreateSaleDto, PaySaleDto, UpdateSaleDto } from "../dtos/sale.dto";
-import { SaleStatus } from "../models/sale.model";
+import { ApiError } from "../utils/apiError";
+import { CreateSaleDto, ListOrdersQueryDto, PaySaleDto, PublicOrderDto, UpdateSaleDto } from "../dtos/sale.dto";
+import { ISale, SaleStatus } from "../models/sale.model";
+import { toOrderDetail, toOrderRow } from "../presenters/order.presenter";
+import { placeWebsiteOrder } from "../services/orders/websiteOrders";
+
+/** Short confirmation shape returned by write endpoints (the client refetches the detail). */
+const toWriteResult = (sale: ISale) => ({
+  id: sale._id.toString(),
+  invoiceNumber: sale.invoiceNumber,
+  source: sale.source,
+  status: sale.status,
+  customer: sale.customer?.name
+    ? { id: sale.customer._id.toString(), name: sale.customer.name, phone: sale.customer.phone }
+    : null,
+  customerName: sale.customerName ?? null,
+  items: sale.items.map((item) => ({
+    kind: item.kind,
+    product: item.product ? (item.product._id ?? item.product).toString() : null,
+    productId: item.product ? (item.product._id ?? item.product).toString() : null,
+    productName: item.productName,
+    productSku: item.productSku,
+    quantity: item.quantity,
+    unitPrice: item.unitPrice,
+    discount: item.discount,
+    subtotal: item.subtotal,
+    finalAmount: item.finalAmount,
+    gamingSession: item.gamingSession?.toString(),
+    station: item.station,
+    durationMinutes: item.durationMinutes,
+  })),
+  subtotalBeforeDiscount: sale.subtotalBeforeDiscount,
+  totalItemDiscounts: sale.totalItemDiscounts,
+  saleDiscount: sale.saleDiscount,
+  totals: sale.totals,
+  createdAt: sale.createdAt,
+});
 
 class SaleController {
-  async createSale(req: CustomRequest, res: Response, next: NextFunction) {
+  async createSale(req: CustomRequest, res: Response, _next: NextFunction) {
     const data: CreateSaleDto = req.body;
-    const cashierId = req.user!.id;
-
-    const sale = await saleService.createSale(cashierId, data);
-
-    return ApiResponseUtil.created(
-      res,
-      {
-        id: sale._id.toString(),
-        invoiceNumber: sale.invoiceNumber,
-        customer: sale.customer
-          ? {
-              id: (sale.customer as any)._id.toString(),
-              name: (sale.customer as any).name,
-              phone: (sale.customer as any).phone,
-            }
-          : null,
-        items: sale.items.map((item) => ({
-          product:
-            typeof item.product === "object"
-              ? (item.product as any)._id.toString()
-              : item.product.toString(),
-          productId:
-            typeof item.product === "object"
-              ? (item.product as any)._id.toString()
-              : item.product.toString(),
-          productName: item.productName,
-          productSku: item.productSku,
-          quantity: item.quantity,
-          unitPrice: item.unitPrice,
-          discount: item.discount,
-          subtotal: item.subtotal,
-          finalAmount: item.finalAmount,
-        })),
-        subtotalBeforeDiscount: sale.subtotalBeforeDiscount,
-        totalItemDiscounts: sale.totalItemDiscounts,
-        saleDiscount: sale.saleDiscount,
-        totals: sale.totals,
-        status: sale.status,
-        createdAt: sale.createdAt,
-      },
-      "Sale created successfully"
-    );
+    const sale = await saleService.createSale(req.user!.id, data);
+    return ApiResponseUtil.created(res, toWriteResult(sale), "Sale created successfully");
   }
 
-  async paySale(req: CustomRequest, res: Response, next: NextFunction) {
-    const { id } = req.params;
-    const paymentData: PaySaleDto = req.body;
+  /** Website menu order (public). */
+  async createPublicOrder(req: CustomRequest, res: Response, _next: NextFunction) {
+    const body: PublicOrderDto = req.body;
+    if (body.website) {
+      // Honeypot tripped: pretend nothing happened
+      throw ApiError.badRequest("Could not place the order");
+    }
+    const order = await placeWebsiteOrder(body);
+    return ApiResponseUtil.created(res, order, "Your order has been sent");
+  }
 
-    const sale = await saleService.paySale(id, paymentData);
+  async paySale(req: CustomRequest, res: Response, _next: NextFunction) {
+    const paymentData: PaySaleDto = req.body;
+    const sale = await saleService.paySale(req.params.id, paymentData, req.user!.id);
 
     return ApiResponseUtil.success(
       res,
@@ -64,6 +69,7 @@ class SaleController {
         id: sale._id.toString(),
         invoiceNumber: sale.invoiceNumber,
         status: sale.status,
+        totals: sale.totals,
         paymentMethod: sale.paymentMethod,
         paymentCurrency: sale.paymentCurrency,
         amountPaid: sale.amountPaid,
@@ -73,228 +79,67 @@ class SaleController {
     );
   }
 
-  async getSaleById(req: CustomRequest, res: Response, next: NextFunction) {
-    const { id } = req.params;
-    const sale = await saleService.getSaleById(id);
-    const currentCostData = await saleService.getCurrentSaleCost(id);
-    const enrichedItems = await saleService.enrichSaleItemsWithSessionData(
-      sale.items
-    );
-
-    return ApiResponseUtil.success(
-      res,
-      {
-        id: sale._id.toString(),
-        invoiceNumber: sale.invoiceNumber,
-        customer: sale.customer
-          ? {
-              id: (sale.customer as any)._id.toString(),
-              name: (sale.customer as any).name,
-              phone: (sale.customer as any).phone,
-            }
-          : null,
-        items: enrichedItems,
-        subtotalBeforeDiscount: sale.subtotalBeforeDiscount,
-        totalItemDiscounts: sale.totalItemDiscounts,
-        saleDiscount: sale.saleDiscount,
-        totals: sale.totals,
-        currentTotals: currentCostData.currentTotals,
-        hasActiveSessions: currentCostData.hasActiveSessions,
-        activeSessions: currentCostData.activeSessions,
-        paymentMethod: sale.paymentMethod,
-        paymentCurrency: sale.paymentCurrency,
-        amountPaid: sale.amountPaid,
-        status: sale.status,
-        cashier: {
-          name: (sale.cashier as any).name,
-          email: (sale.cashier as any).email,
-        },
-        notes: sale.notes,
-        paidAt: sale.paidAt,
-        createdAt: sale.createdAt,
-      },
-      "Sale retrieved successfully"
-    );
+  async getSaleById(req: CustomRequest, res: Response, _next: NextFunction) {
+    const { order, sessions } = await saleService.getOrderDetail(req.params.id);
+    return ApiResponseUtil.success(res, toOrderDetail(order, sessions), "Sale retrieved successfully");
   }
 
-  async getSaleByInvoice(
-    req: CustomRequest,
-    res: Response,
-    next: NextFunction
-  ) {
-    const { invoiceNumber } = req.params;
-    const sale = await saleService.getSaleByInvoice(invoiceNumber);
-
-    return ApiResponseUtil.success(
-      res,
-      {
-        id: sale._id.toString(),
-        invoiceNumber: sale.invoiceNumber,
-        customer: sale.customer
-          ? {
-              id: (sale.customer as any)._id.toString(),
-              name: (sale.customer as any).name,
-              phone: (sale.customer as any).phone,
-            }
-          : null,
-        items: sale.items.map((item) => ({
-          product:
-            typeof item.product === "object"
-              ? (item.product as any)._id.toString()
-              : item.product.toString(),
-          productId:
-            typeof item.product === "object"
-              ? (item.product as any)._id.toString()
-              : item.product.toString(),
-          productName: item.productName,
-          productSku: item.productSku,
-          quantity: item.quantity,
-          unitPrice: item.unitPrice,
-          discount: item.discount,
-          subtotal: item.subtotal,
-          finalAmount: item.finalAmount,
-        })),
-        subtotalBeforeDiscount: sale.subtotalBeforeDiscount,
-        totalItemDiscounts: sale.totalItemDiscounts,
-        saleDiscount: sale.saleDiscount,
-        totals: sale.totals,
-        paymentMethod: sale.paymentMethod,
-        status: sale.status,
-        paidAt: sale.paidAt,
-        createdAt: sale.createdAt,
-      },
-      "Sale retrieved successfully"
-    );
+  async getSaleByInvoice(req: CustomRequest, res: Response, _next: NextFunction) {
+    const { order, sessions } = await saleService.getOrderDetailByInvoice(req.params.invoiceNumber);
+    return ApiResponseUtil.success(res, toOrderDetail(order, sessions), "Sale retrieved successfully");
   }
 
-  async updateSale(req: CustomRequest, res: Response, next: NextFunction) {
-    const { id } = req.params;
+  async updateSale(req: CustomRequest, res: Response, _next: NextFunction) {
     const data: UpdateSaleDto = req.body;
-
-    const sale = await saleService.updateSale(id, data);
-
-    return ApiResponseUtil.success(
-      res,
-      {
-        id: sale._id.toString(),
-        invoiceNumber: sale.invoiceNumber,
-        customer: sale.customer
-          ? {
-              id: (sale.customer as any)._id.toString(),
-              name: (sale.customer as any).name,
-              phone: (sale.customer as any).phone,
-            }
-          : null,
-        items: sale.items.map((item) => ({
-          product:
-            typeof item.product === "object"
-              ? (item.product as any)._id.toString()
-              : item.product.toString(),
-          productId:
-            typeof item.product === "object"
-              ? (item.product as any)._id.toString()
-              : item.product.toString(),
-          productName: item.productName,
-          productSku: item.productSku,
-          quantity: item.quantity,
-          unitPrice: item.unitPrice,
-          discount: item.discount,
-          subtotal: item.subtotal,
-          finalAmount: item.finalAmount,
-        })),
-        subtotalBeforeDiscount: sale.subtotalBeforeDiscount,
-        totalItemDiscounts: sale.totalItemDiscounts,
-        saleDiscount: sale.saleDiscount,
-        totals: sale.totals,
-        status: sale.status,
-        createdAt: sale.createdAt,
-      },
-      "Sale updated successfully"
-    );
+    const sale = await saleService.updateSale(req.params.id, data);
+    return ApiResponseUtil.success(res, toWriteResult(sale), "Sale updated successfully");
   }
 
-  async getAllSales(req: CustomRequest, res: Response, next: NextFunction) {
-    const filters = {
-      status: req.query.status as SaleStatus,
-      customerId: req.query.customerId as string,
-      cashierId: req.query.cashierId as string,
-      startDate: req.query.startDate as string | undefined,
-      endDate: req.query.endDate as string | undefined,
-      page: req.query.page ? Number(req.query.page) : 1,
-      limit: req.query.limit ? Number(req.query.limit) : 20,
-    };
-
-    const result = await saleService.getAllSales(filters);
+  async getAllSales(req: CustomRequest, res: Response, _next: NextFunction) {
+    const q = res.locals.query as ListOrdersQueryDto;
+    const page = q.page ?? 1;
+    const limit = q.limit ?? 20;
+    const result = await saleService.listOrders(
+      {
+        status: q.status ? (q.status.split(",") as SaleStatus[]) : undefined,
+        source: q.source,
+        types: q.type ? (q.type.split(",") as OrderTypeFilter[]) : undefined,
+        search: q.search,
+        from: q.from ?? q.startDate,
+        to: q.to ?? q.endDate,
+        customerId: q.customerId,
+        cashierId: q.cashierId,
+      },
+      page,
+      limit
+    );
 
     return ApiResponseUtil.paginated(
       res,
-      result.sales.map((sale) => ({
-        id: sale._id.toString(),
-        invoiceNumber: sale.invoiceNumber,
-        customer: sale.customer
-          ? {
-              name: (sale.customer as any).name,
-              phone: (sale.customer as any).phone,
-            }
-          : null,
-        subtotalBeforeDiscount: sale.subtotalBeforeDiscount,
-        totalItemDiscounts: sale.totalItemDiscounts,
-        saleDiscount: sale.saleDiscount,
-        totals: sale.totals,
-        currentTotals: sale.currentTotals,
-        hasActiveSessions: sale.hasActiveSessions,
-        paymentMethod: sale.paymentMethod,
-        paymentCurrency: sale.paymentCurrency,
-        status: sale.status,
-        cashier: (sale.cashier as any).name,
-        createdAt: sale.createdAt,
-      })),
+      result.orders.map(toOrderRow),
       result.page,
-      filters.limit,
+      limit,
       result.total,
       "Sales retrieved successfully"
     );
   }
 
-  async cancelSale(req: CustomRequest, res: Response, next: NextFunction) {
-    const { id } = req.params;
-    await saleService.cancelSale(id);
+  async getCounts(req: CustomRequest, res: Response, _next: NextFunction) {
+    const counts = await saleService.getCounts();
+    return ApiResponseUtil.success(res, counts, "Order counts retrieved");
+  }
 
+  async cancelSale(req: CustomRequest, res: Response, _next: NextFunction) {
+    await saleService.cancelSale(req.params.id, req.user!.id);
     return ApiResponseUtil.success(res, null, "Sale cancelled successfully");
   }
 
-  async getTodaySales(req: CustomRequest, res: Response, next: NextFunction) {
+  async getTodaySales(req: CustomRequest, res: Response, _next: NextFunction) {
     const result = await saleService.getTodaySales();
-
+    const { orders, ...stats } = result;
     return ApiResponseUtil.success(
       res,
-      {
-        totalSales: result.totalSales,
-        totalRevenue: result.totalRevenue,
-        totalDiscounts: result.totalDiscounts,
-        pendingSales: result.pendingSales,
-        paidSales: result.paidSales,
-        sales: result.sales.map((sale) => ({
-          id: sale._id.toString(),
-          invoiceNumber: sale.invoiceNumber,
-          customer: sale.customer
-            ? {
-                name: (sale.customer as any).name,
-                phone: (sale.customer as any).phone,
-              }
-            : null,
-          subtotalBeforeDiscount: sale.subtotalBeforeDiscount,
-          totalItemDiscounts: sale.totalItemDiscounts,
-          saleDiscount: sale.saleDiscount,
-          totals: sale.totals,
-          paymentMethod: sale.paymentMethod,
-          paymentCurrency: sale.paymentCurrency,
-          status: sale.status,
-          cashier: (sale.cashier as any).name,
-          paidAt: sale.paidAt,
-          createdAt: sale.createdAt,
-        })),
-      },
+      { ...stats, sales: orders.map(toOrderRow) },
       "Today sales stats retrieved successfully"
     );
   }

@@ -6,7 +6,6 @@ import reservationService from "../services/reservation.service";
 import { StationType } from "../models/pc.model";
 import {
   CancelReservationDto,
-  CheckInReservationDto,
   CreateReservationDto,
   CustomerReservationDto,
   UpdateReservationDto,
@@ -50,15 +49,15 @@ class ReservationController {
   }
 
   async lookup(req: CustomRequest, res: Response, _next: NextFunction) {
-    const { code, phone }: CustomerReservationDto = req.body;
-    const reservation = await reservationService.lookup(code, phone);
+    const { code, phone, phoneCountry }: CustomerReservationDto = req.body;
+    const reservation = await reservationService.lookup(code, phone, phoneCountry);
     const settings = await reservationService.getSettings();
     return ApiResponseUtil.success(res, reservationService.toPublic(reservation, settings.timezone), "Booking found");
   }
 
   async cancelPublic(req: CustomRequest, res: Response, _next: NextFunction) {
-    const { code, phone }: CustomerReservationDto = req.body;
-    const reservation = await reservationService.cancelByCustomer(code, phone);
+    const { code, phone, phoneCountry }: CustomerReservationDto = req.body;
+    const reservation = await reservationService.cancelByCustomer(code, phone, phoneCountry);
     const settings = await reservationService.getSettings();
     return ApiResponseUtil.success(res, reservationService.toPublic(reservation, settings.timezone), "Booking cancelled");
   }
@@ -111,8 +110,8 @@ class ReservationController {
   }
 
   async checkIn(req: CustomRequest, res: Response, _next: NextFunction) {
-    const { createSale }: CheckInReservationDto = req.body;
-    const r = await reservationService.checkIn(req.params.id, req.user!.id, { createSale });
+    // `createSale` (CheckInReservationDto) is accepted for older clients and ignored: sessions always get an order
+    const r = await reservationService.checkIn(req.params.id, req.user!.id);
     return ApiResponseUtil.success(res, reservationService.toStaff(r), "Checked in — sessions started");
   }
 

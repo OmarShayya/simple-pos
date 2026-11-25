@@ -38,18 +38,21 @@ currently occupied.
 - `GET /reservations/public/availability?type=pc&date=YYYY-MM-DD&duration=120`
   → `slots[]` with `start`, `end`, `label`, `status` (`available`|`full`|`past`), `availableCount`,
   `availableStationIds`, plus `stations[]`.
-- `POST /reservations/public` `{ type, start, durationMinutes, stationIds? | stationCount?, customerName, customerPhone, customerEmail?, notes? }`
-  → auto-confirmed booking with a 6-character `code`. Rate-limited (10/hour/IP), max 3 upcoming bookings
+- `POST /reservations/public` `{ type, start, durationMinutes, stationIds? | stationCount?, customerName, customerPhone, phoneCountry?, customerEmail?, notes? }`
+  → auto-confirmed booking with a 6-character `code`. The phone is stored in E.164 (numbers without a country
+  code are Lebanese; invalid → 400 "Please enter a valid phone number") and the booking is linked to a customer
+  record (created on the first booking). Rate-limited (10/hour/IP), max 3 upcoming bookings
   per phone, hidden `website` honeypot field rejects bots, double-booking races are resolved (first wins).
-- `POST /reservations/public/lookup` / `POST /reservations/public/cancel` `{ code, phone }`.
+- `POST /reservations/public/lookup` / `POST /reservations/public/cancel` `{ code, phone, phoneCountry? }` (phone in any format).
 
 ## Staff endpoints (POS, authenticated)
 - `GET /reservations?date=YYYY-MM-DD&status=confirmed,checked_in&type=&search=`
 - `GET /reservations/availability?…` (same as public, without lead-time / booking-window limits)
 - `POST /reservations` (phone/walk-in bookings, source `pos`)
 - `PATCH /reservations/:id` (move time, change length/stations/customer details)
-- `POST /reservations/:id/check-in` `{ createSale? }` → starts a gaming session on every reserved station
-  (from 30 min before the start time)
+- `POST /reservations/:id/check-in` → starts a gaming session (each on its own pending order, linked to the
+  booking's customer) on every reserved station, from 30 min before the start time. `createSale` is still
+  accepted but ignored: every session now lives on an order.
 - `PATCH /reservations/:id/cancel` `{ reason? }`, `PATCH /reservations/:id/no-show`
 
 Statuses: `confirmed` → `checked_in` | `cancelled` | `no_show`.

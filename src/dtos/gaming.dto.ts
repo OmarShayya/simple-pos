@@ -9,6 +9,7 @@ import {
   Min,
   MaxLength,
   IsNotEmpty,
+  Length,
 } from "class-validator";
 import { PCStatus, StationType } from "../models/pc.model";
 import { PaymentMethod, Currency } from "../models/sale.model";
@@ -106,15 +107,29 @@ export class StartSessionDto {
 
   @IsOptional()
   @IsString()
+  @MaxLength(100)
   customerName?: string;
 
+  /** Links (or auto-creates) the customer by phone when no customerId is given. E.164 or national number. */
+  @IsOptional()
+  @IsString()
+  @MaxLength(30)
+  customerPhone?: string;
+
+  @IsOptional()
+  @IsString()
+  @Length(2, 2)
+  phoneCountry?: string;
+
+  /** Add the session to this pending order instead of opening a new one. */
   @IsOptional()
   @IsMongoId()
   saleId?: string;
 
+  /** Deprecated: every session now lives on an order. Accepted and ignored. */
   @IsOptional()
   @IsBoolean()
-  createSale?: boolean; // Override for config.gaming.autoCreateSale
+  createSale?: boolean;
 
   @IsOptional()
   @IsString()

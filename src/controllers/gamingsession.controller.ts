@@ -11,6 +11,20 @@ import {
   SessionStatus,
   SessionPaymentStatus,
 } from "../models/gamingsession.model";
+import { toCustomerSummary } from "../presenters/customer.presenter";
+import { sessionCharge } from "../services/gaming/sessionClock";
+
+const idOf = (ref: unknown): string | null =>
+  ref ? ((ref as { _id?: { toString(): string } })._id ?? ref).toString() : null;
+
+/** The session's order, as `{ id, invoiceNumber, status, totals }` when populated. */
+const toSaleRef = (ref: unknown) => {
+  if (!ref) return null;
+  const sale = ref as { _id?: unknown; invoiceNumber?: string; status?: string; totals?: unknown };
+  return sale.invoiceNumber
+    ? { id: idOf(ref), invoiceNumber: sale.invoiceNumber, status: sale.status, totals: sale.totals }
+    : { id: idOf(ref) };
+};
 
 class GamingSessionController {
   async startSession(req: CustomRequest, res: Response, next: NextFunction) {
@@ -28,22 +42,13 @@ class GamingSessionController {
           pcNumber: (session.pc as any).pcNumber,
           name: (session.pc as any).name,
         },
-        customer: session.customer
-          ? {
-              id: (session.customer as any)._id.toString(),
-              name: (session.customer as any).name,
-            }
-          : null,
+        customer: toCustomerSummary(session.customer),
         customerName: session.customerName,
         startTime: session.startTime,
         hourlyRate: session.hourlyRate,
         status: session.status,
-        sale: session.sale
-          ? {
-              id: (session.sale as any)._id.toString(),
-              invoiceNumber: (session.sale as any).invoiceNumber,
-            }
-          : null,
+        orderId: idOf(session.sale),
+        sale: toSaleRef(session.sale),
         isBillable: session.isBillable,
         startedBy: {
           name: (session.startedBy as any).name,
@@ -73,28 +78,18 @@ class GamingSessionController {
           pcNumber: (session.pc as any).pcNumber,
           name: (session.pc as any).name,
         },
-        customer: session.customer
-          ? {
-              id: (session.customer as any)._id.toString(),
-              name: (session.customer as any).name,
-            }
-          : null,
+        customer: toCustomerSummary(session.customer),
         customerName: session.customerName,
         startTime: session.startTime,
         endTime: session.endTime,
         duration: session.duration,
         totalCost: session.totalCost,
-        discount: session.discount,
+        discount: session.discount?.percentage ? session.discount : undefined,
         finalAmount: session.finalAmount,
         status: session.status,
         paymentStatus: session.paymentStatus,
-        sale: session.sale
-          ? {
-              id: (session.sale as any)._id.toString(),
-              invoiceNumber: (session.sale as any).invoiceNumber,
-              totals: (session.sale as any).totals,
-            }
-          : null,
+        orderId: idOf(session.sale),
+        sale: toSaleRef(session.sale),
         isBillable: session.isBillable,
       },
       "Gaming session ended successfully"
@@ -104,7 +99,7 @@ class GamingSessionController {
   async processPayment(req: CustomRequest, res: Response, next: NextFunction) {
     const { id } = req.params;
     const paymentData: ProcessSessionPaymentDto = req.body;
-    const session = await gamingSessionService.processPayment(id, paymentData);
+    const session = await gamingSessionService.processPayment(id, paymentData, req.user!.id);
 
     return ApiResponseUtil.success(
       res,
@@ -112,13 +107,11 @@ class GamingSessionController {
         id: session._id.toString(),
         sessionNumber: session.sessionNumber,
         totalCost: session.totalCost,
+        finalAmount: session.finalAmount,
+        status: session.status,
         paymentStatus: session.paymentStatus,
-        sale: session.sale
-          ? {
-              id: (session.sale as any)._id.toString(),
-              invoiceNumber: (session.sale as any).invoiceNumber,
-            }
-          : null,
+        orderId: idOf(session.sale),
+        sale: toSaleRef(session.sale),
       },
       "Payment processed successfully"
     );
@@ -157,12 +150,10 @@ class GamingSessionController {
         endedBy: session.endedBy
           ? { name: (session.endedBy as any).name }
           : null,
-        sale: session.sale
-          ? {
-              id: (session.sale as any)._id.toString(),
-              invoiceNumber: (session.sale as any).invoiceNumber,
-            }
-          : null,
+        discount: session.discount?.percentage ? session.discount : undefined,
+        finalAmount: session.finalAmount,
+        orderId: idOf(session.sale),
+        sale: toSaleRef(session.sale),
         isBillable: session.isBillable,
         notes: session.notes,
         createdAt: session.createdAt,
@@ -207,8 +198,10 @@ class GamingSessionController {
         totalCost: session.totalCost,
         status: session.status,
         paymentStatus: session.paymentStatus,
+        finalAmount: session.finalAmount,
+        orderId: idOf(session.sale),
         isBillable: session.isBillable,
-        startedBy: (session.startedBy as any).name,
+        startedBy: (session.startedBy as any)?.name,
       })),
       result.page,
       filters.limit,
@@ -227,12 +220,7 @@ class GamingSessionController {
     return ApiResponseUtil.success(
       res,
       sessions.map((session) => {
-        const now = new Date();
-        const durationMs = now.getTime() - session.startTime.getTime();
-        const durationMinutes = Math.ceil(durationMs / (1000 * 60));
-        const durationHours = durationMinutes / 60;
-        const currentCostUsd = session.hourlyRate.usd * durationHours;
-        const currentCostLbp = session.hourlyRate.lbp * durationHours;
+        const { minutes: durationMinutes, cost: currentCost } = sessionCharge(session);
 
         return {
           id: session._id.toString(),
@@ -253,11 +241,9 @@ class GamingSessionController {
           customerName: session.customerName,
           startTime: session.startTime,
           currentDuration: durationMinutes,
-          currentCost: {
-            usd: Math.round(currentCostUsd * 100) / 100,
-            lbp: Math.round(currentCostLbp),
-          },
+          currentCost,
           hourlyRate: session.hourlyRate,
+          orderId: idOf(session.sale),
           isBillable: session.isBillable,
           startedBy: { name: (session.startedBy as any).name },
         };
