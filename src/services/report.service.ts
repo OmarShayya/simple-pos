@@ -1,499 +1,181 @@
 import Sale, { SaleStatus, Currency } from "../models/sale.model";
-import {
-  startOfWeek,
-  endOfWeek,
-  startOfMonth,
-  endOfMonth,
-  startOfYear,
-  endOfYear,
-} from "date-fns";
 import GamingSession, {
   SessionStatus,
   SessionPaymentStatus,
 } from "../models/gamingsession.model";
-import Category from "../models/category.model";
-import Product from "../models/product.model";
+import { Money, roundMoney, zeroMoney, addMoney } from "../utils/money";
+import { locateBucket, ReportPeriod, resolvePeriod, ResolvedPeriod } from "../utils/period";
+import { localDateString, localHour } from "../utils/time";
+import { getLoungeTimezone } from "./loungeSettings";
+import { isGamingLine } from "./orders/orderLines";
+import { LedgerEntry, loadLedger } from "./reports/revenueLedger";
+import { average, revenueTotals } from "./reports/ledgerAggregates";
 
+/**
+ * Older report endpoints (still used by older POS builds). Their headline numbers now come from the
+ * same revenue ledger as GET /reports/summary: paid orders by payment time, lounge timezone,
+ * sessions counted once. New clients should use the summary report.
+ */
 interface RevenueBreakdown {
-  total: {
-    usd: number;
-    lbp: number;
-  };
-  products: {
-    usd: number;
-    lbp: number;
-  };
-  gaming: {
-    usd: number;
-    lbp: number;
-  };
-  usdPayments: {
-    usd: number;
-    lbp: number;
-  };
-  lbpPayments: {
-    usd: number;
-    lbp: number;
-  };
+  total: Money;
+  products: Money;
+  gaming: Money;
+  usdPayments: Money;
+  lbpPayments: Money;
   totalSales: number;
   productSales: number;
   gamingSales: number;
-  averageSale: {
-    usd: number;
-    lbp: number;
-  };
+  averageSale: Money;
   discounts: {
-    totalItemDiscounts: {
-      usd: number;
-      lbp: number;
-    };
-    totalSaleDiscounts: {
-      usd: number;
-      lbp: number;
-    };
-    totalDiscounts: {
-      usd: number;
-      lbp: number;
-    };
-    revenueBeforeDiscounts: {
-      usd: number;
-      lbp: number;
-    };
+    totalItemDiscounts: Money;
+    totalSaleDiscounts: Money;
+    totalDiscounts: Money;
+    revenueBeforeDiscounts: Money;
   };
 }
 
+const sumBy = (entries: LedgerEntry[], pick: (e: LedgerEntry) => Money): Money =>
+  roundMoney(entries.reduce((acc, e) => addMoney(acc, pick(e)), zeroMoney()));
+
+const paidIn = (entries: LedgerEntry[], currency: Currency) =>
+  sumBy(entries.filter((e) => e.paymentCurrency === currency), (e) => e.amountPaid);
+
+const toBreakdown = (entries: LedgerEntry[]): RevenueBreakdown => {
+  const totals = revenueTotals(entries);
+  const itemDiscounts = sumBy(entries, (e) => e.itemDiscounts);
+  const saleDiscounts = sumBy(entries, (e) => e.orderDiscount);
+  return {
+    total: totals.revenue,
+    products: totals.products,
+    gaming: totals.gaming,
+    usdPayments: paidIn(entries, Currency.USD),
+    lbpPayments: paidIn(entries, Currency.LBP),
+    totalSales: totals.orders,
+    productSales: entries.filter((e) => e.lines.some((l) => l.kind === "product")).length,
+    gamingSales: entries.filter((e) => e.lines.some((l) => l.kind === "gaming")).length,
+    averageSale: average(totals.revenue, totals.orders),
+    discounts: {
+      totalItemDiscounts: itemDiscounts,
+      totalSaleDiscounts: saleDiscounts,
+      totalDiscounts: totals.discounts,
+      revenueBeforeDiscounts: roundMoney(addMoney(totals.revenue, totals.discounts)),
+    },
+  };
+};
+
+/** Groups ledger entries into a period's buckets with the legacy row shape. */
+const bucketRows = (entries: LedgerEntry[], period: ResolvedPeriod) => {
+  const rows = period.buckets.map((b) => ({ key: b.key, entries: [] as LedgerEntry[] }));
+  for (const e of entries) {
+    const i = locateBucket(period.buckets, e.at);
+    if (i >= 0) rows[i].entries.push(e);
+  }
+  return rows.filter((r) => r.entries.length);
+};
+
+const pad = (n: number) => String(n).padStart(2, "0");
+
 class ReportService {
-  // Helper to get Gaming category ID
-  private async getGamingCategoryId(): Promise<string | null> {
-    const gamingCategory = await Category.findOne({
-      name: { $regex: /^gaming$/i },
-    });
-    return gamingCategory?._id.toString() || null;
+  private async periodLedger(period: ReportPeriod, date: string) {
+    const tz = await getLoungeTimezone();
+    const resolved = resolvePeriod(period, date, tz);
+    return { tz, resolved, entries: await loadLedger(resolved.range) };
   }
 
-  // Helper to get all product IDs under Gaming category
-  private async getGamingProductIds(): Promise<Set<string>> {
-    const gamingCategoryId = await this.getGamingCategoryId();
-    if (!gamingCategoryId) return new Set();
-
-    const gamingProducts = await Product.find({ category: gamingCategoryId });
-    return new Set(gamingProducts.map((p) => p._id.toString()));
+  private paymentSplit(entries: LedgerEntry[]) {
+    return {
+      total: sumBy(entries, (e) => e.amountPaid),
+      usdPayments: paidIn(entries, Currency.USD).usd,
+      lbpPayments: paidIn(entries, Currency.LBP).lbp,
+    };
   }
 
-  // Check if a sale item is gaming (either gaming product or gaming session)
-  private isGamingItem(
-    item: any,
-    gamingProductIds: Set<string>
-  ): boolean {
-    // Gaming sessions have productSku starting with "SESSION-"
-    if (item.productSku?.startsWith("SESSION-")) {
-      return true;
-    }
-    // Products under Gaming category
-    return gamingProductIds.has(item.product.toString());
-  }
+  async getDailyReport(date: Date | string) {
+    const day = typeof date === "string" ? date.slice(0, 10) : date.toISOString().slice(0, 10);
+    const { tz, resolved, entries } = await this.periodLedger("day", day);
 
-  private async getRevenueBreakdown(
-    startDate: Date,
-    endDate: Date
-  ): Promise<RevenueBreakdown> {
-    // Only include PAID sales in reports
-    const sales = await Sale.find({
-      createdAt: { $gte: startDate, $lte: endDate },
-      status: SaleStatus.PAID,
-    });
-
-    // Get gaming product IDs for categorization
-    const gamingProductIds = await this.getGamingProductIds();
-
-    const usdPaymentSales = sales.filter(
-      (s) => s.paymentCurrency === Currency.USD
-    );
-    const lbpPaymentSales = sales.filter(
-      (s) => s.paymentCurrency === Currency.LBP
-    );
-
-    // Calculate separated revenue (products vs gaming) from item-level data
-    let productsRevenue = { usd: 0, lbp: 0 };
-    let gamingRevenue = { usd: 0, lbp: 0 };
-    let productSalesCount = 0;
-    let gamingSalesCount = 0;
-
-    for (const sale of sales) {
-      let saleHasProducts = false;
-      let saleHasGaming = false;
-      let saleProductsTotal = { usd: 0, lbp: 0 };
-      let saleGamingTotal = { usd: 0, lbp: 0 };
-
-      // Calculate item totals for this sale
-      for (const item of sale.items) {
-        const itemRevenue = item.finalAmount || item.subtotal;
-        if (this.isGamingItem(item, gamingProductIds)) {
-          saleGamingTotal.usd += itemRevenue.usd;
-          saleGamingTotal.lbp += itemRevenue.lbp;
-          saleHasGaming = true;
-        } else {
-          saleProductsTotal.usd += itemRevenue.usd;
-          saleProductsTotal.lbp += itemRevenue.lbp;
-          saleHasProducts = true;
-        }
-      }
-
-      // If there's a sale-level discount, distribute it proportionally
-      if (sale.saleDiscount?.amount) {
-        const itemsTotal = saleProductsTotal.usd + saleGamingTotal.usd;
-        if (itemsTotal > 0) {
-          const productsRatio = saleProductsTotal.usd / itemsTotal;
-          const gamingRatio = saleGamingTotal.usd / itemsTotal;
-
-          // Apply proportional discount
-          saleProductsTotal.usd -= sale.saleDiscount.amount.usd * productsRatio;
-          saleProductsTotal.lbp -= sale.saleDiscount.amount.lbp * productsRatio;
-          saleGamingTotal.usd -= sale.saleDiscount.amount.usd * gamingRatio;
-          saleGamingTotal.lbp -= sale.saleDiscount.amount.lbp * gamingRatio;
-        }
-      }
-
-      // Add to totals
-      productsRevenue.usd += saleProductsTotal.usd;
-      productsRevenue.lbp += saleProductsTotal.lbp;
-      gamingRevenue.usd += saleGamingTotal.usd;
-      gamingRevenue.lbp += saleGamingTotal.lbp;
-
-      // Count sales by type
-      if (saleHasProducts) productSalesCount++;
-      if (saleHasGaming) gamingSalesCount++;
+    const byHour = new Map<number, LedgerEntry[]>();
+    for (const e of entries) {
+      const hour = localHour(e.at, tz);
+      byHour.set(hour, [...(byHour.get(hour) ?? []), e]);
     }
 
-    // Total revenue = products + gaming (they should now match)
-    const totalRevenue = {
-      usd: Math.round((productsRevenue.usd + gamingRevenue.usd) * 100) / 100,
-      lbp: Math.round(productsRevenue.lbp + gamingRevenue.lbp),
-    };
-
-    // Round the individual amounts too
-    productsRevenue = {
-      usd: Math.round(productsRevenue.usd * 100) / 100,
-      lbp: Math.round(productsRevenue.lbp),
-    };
-    gamingRevenue = {
-      usd: Math.round(gamingRevenue.usd * 100) / 100,
-      lbp: Math.round(gamingRevenue.lbp),
-    };
-
-    const usdPaymentsRevenue = usdPaymentSales.reduce(
-      (acc, sale) => ({
-        usd: acc.usd + sale.amountPaid.usd,
-        lbp: acc.lbp + sale.amountPaid.lbp,
-      }),
-      { usd: 0, lbp: 0 }
-    );
-
-    const lbpPaymentsRevenue = lbpPaymentSales.reduce(
-      (acc, sale) => ({
-        usd: acc.usd + sale.amountPaid.usd,
-        lbp: acc.lbp + sale.amountPaid.lbp,
-      }),
-      { usd: 0, lbp: 0 }
-    );
-
-    // Calculate discount totals
-    const totalItemDiscounts = sales.reduce(
-      (acc, sale) => ({
-        usd: acc.usd + (sale.totalItemDiscounts?.usd || 0),
-        lbp: acc.lbp + (sale.totalItemDiscounts?.lbp || 0),
-      }),
-      { usd: 0, lbp: 0 }
-    );
-
-    const totalSaleDiscounts = sales.reduce(
-      (acc, sale) => ({
-        usd: acc.usd + (sale.saleDiscount?.amount.usd || 0),
-        lbp: acc.lbp + (sale.saleDiscount?.amount.lbp || 0),
-      }),
-      { usd: 0, lbp: 0 }
-    );
-
-    const totalDiscounts = {
-      usd: totalItemDiscounts.usd + totalSaleDiscounts.usd,
-      lbp: totalItemDiscounts.lbp + totalSaleDiscounts.lbp,
-    };
-
-    const revenueBeforeDiscounts = {
-      usd: totalRevenue.usd + totalDiscounts.usd,
-      lbp: totalRevenue.lbp + totalDiscounts.lbp,
-    };
-
-    const totalSales = sales.length;
-
     return {
-      total: totalRevenue,
-      products: productsRevenue,
-      gaming: gamingRevenue,
-      usdPayments: usdPaymentsRevenue,
-      lbpPayments: lbpPaymentsRevenue,
-      totalSales,
-      productSales: productSalesCount,
-      gamingSales: gamingSalesCount,
-      averageSale: {
-        usd: totalSales > 0 ? totalRevenue.usd / totalSales : 0,
-        lbp: totalSales > 0 ? totalRevenue.lbp / totalSales : 0,
-      },
-      discounts: {
-        totalItemDiscounts,
-        totalSaleDiscounts,
-        totalDiscounts,
-        revenueBeforeDiscounts,
-      },
-    };
-  }
-
-  async getDailyReport(date: Date) {
-    const dayStart = new Date(date);
-    dayStart.setHours(0, 0, 0, 0);
-    const dayEnd = new Date(date);
-    dayEnd.setHours(23, 59, 59, 999);
-
-    const revenue = await this.getRevenueBreakdown(dayStart, dayEnd);
-
-    const hourlyBreakdown = await Sale.aggregate([
-      {
-        $match: {
-          createdAt: { $gte: dayStart, $lte: dayEnd },
-          status: SaleStatus.PAID,
-        },
-      },
-      {
-        $group: {
-          _id: {
-            $hour: "$createdAt",
-          },
-          totalSales: { $sum: 1 },
-          totalUsd: { $sum: "$amountPaid.usd" },
-          totalLbp: { $sum: "$amountPaid.lbp" },
-        },
-      },
-      {
-        $sort: { _id: 1 },
-      },
-    ]);
-
-    return {
-      period: {
-        type: "daily",
-        date: dayStart,
-      },
-      revenue,
-      hourlyBreakdown: hourlyBreakdown.map((hour) => ({
-        hour: hour._id,
-        totalSales: hour.totalSales,
-        revenue: { usd: hour.totalUsd, lbp: hour.totalLbp },
-      })),
+      period: { type: "daily", date: resolved.range.start, timezone: tz },
+      revenue: toBreakdown(entries),
+      hourlyBreakdown: [...byHour.entries()]
+        .sort((a, b) => a[0] - b[0])
+        .map(([hour, list]) => ({ hour, totalSales: list.length, revenue: sumBy(list, (e) => e.amountPaid) })),
     };
   }
 
   async getWeeklyReport(week: number, month: number, year: number) {
-    // Calculate the date for the specific week
-    const monthStart = new Date(year, month - 1, 1);
-    const weekStartDate = new Date(monthStart);
-    weekStartDate.setDate(monthStart.getDate() + (week - 1) * 7);
-
-    const startDate = startOfWeek(weekStartDate, { weekStartsOn: 1 });
-    const endDate = endOfWeek(weekStartDate, { weekStartsOn: 1 });
-
-    const revenue = await this.getRevenueBreakdown(startDate, endDate);
-
-    const dailyBreakdown = await this.getDailyBreakdown(startDate, endDate);
-
+    // "Week N of the month": the week (Monday–Sunday) containing day 1 + 7·(N−1)
+    const anchor = new Date(Date.UTC(year, month - 1, 1 + (week - 1) * 7)).toISOString().slice(0, 10);
+    const { tz, resolved, entries } = await this.periodLedger("week", anchor);
     return {
       period: {
         type: "weekly",
         week,
         month,
         year,
-        startDate,
-        endDate,
+        startDate: resolved.range.start,
+        endDate: new Date(resolved.range.end.getTime() - 1),
+        timezone: tz,
       },
-      revenue,
-      dailyBreakdown,
+      revenue: toBreakdown(entries),
+      dailyBreakdown: this.dailyBreakdown(entries, resolved),
     };
   }
 
   async getMonthlyReport(month: number, year: number) {
-    const startDate = startOfMonth(new Date(year, month - 1));
-    const endDate = endOfMonth(new Date(year, month - 1));
-
-    const revenue = await this.getRevenueBreakdown(startDate, endDate);
-
-    const dailyBreakdown = await this.getDailyBreakdown(startDate, endDate);
-
-    const weeklyBreakdown = await this.getWeeklyBreakdown(startDate, endDate);
-
+    const { tz, resolved, entries } = await this.periodLedger("month", `${year}-${pad(month)}-01`);
+    const weeks = new Map<string, LedgerEntry[]>();
+    for (const e of entries) {
+      const weekStart = resolvePeriod("week", localDateString(e.at, tz), tz).range.firstDay;
+      weeks.set(weekStart, [...(weeks.get(weekStart) ?? []), e]);
+    }
     return {
       period: {
         type: "monthly",
         month,
         year,
-        startDate,
-        endDate,
+        startDate: resolved.range.start,
+        endDate: new Date(resolved.range.end.getTime() - 1),
+        timezone: tz,
       },
-      revenue,
-      dailyBreakdown,
-      weeklyBreakdown,
+      revenue: toBreakdown(entries),
+      dailyBreakdown: this.dailyBreakdown(entries, resolved),
+      weeklyBreakdown: [...weeks.entries()]
+        .sort((a, b) => a[0].localeCompare(b[0]))
+        .map(([weekStart, list]) => ({ week: weekStart, totalSales: list.length, revenue: sumBy(list, (e) => e.amountPaid) })),
     };
   }
 
   async getYearlyReport(year: number) {
-    const startDate = startOfYear(new Date(year, 0));
-    const endDate = endOfYear(new Date(year, 0));
-
-    const revenue = await this.getRevenueBreakdown(startDate, endDate);
-
-    const monthlyBreakdown = await this.getMonthlyBreakdown(startDate, endDate);
-
+    const { tz, resolved, entries } = await this.periodLedger("year", `${year}-01-01`);
     return {
       period: {
         type: "yearly",
         year,
-        startDate,
-        endDate,
+        startDate: resolved.range.start,
+        endDate: new Date(resolved.range.end.getTime() - 1),
+        timezone: tz,
       },
-      revenue,
-      monthlyBreakdown,
+      revenue: toBreakdown(entries),
+      monthlyBreakdown: bucketRows(entries, resolved).map((row) => ({
+        month: Number(row.key.slice(5, 7)),
+        totalSales: row.entries.length,
+        revenue: this.paymentSplit(row.entries),
+      })),
     };
   }
 
-  private async getDailyBreakdown(startDate: Date, endDate: Date) {
-    const sales = await Sale.aggregate([
-      {
-        $match: {
-          createdAt: { $gte: startDate, $lte: endDate },
-          status: SaleStatus.PAID,
-        },
-      },
-      {
-        $group: {
-          _id: {
-            $dateToString: { format: "%Y-%m-%d", date: "$createdAt" },
-          },
-          totalSales: { $sum: 1 },
-          totalUsd: { $sum: "$amountPaid.usd" },
-          totalLbp: { $sum: "$amountPaid.lbp" },
-          usdPayments: {
-            $sum: {
-              $cond: [
-                { $eq: ["$paymentCurrency", Currency.USD] },
-                "$amountPaid.usd",
-                0,
-              ],
-            },
-          },
-          lbpPayments: {
-            $sum: {
-              $cond: [
-                { $eq: ["$paymentCurrency", Currency.LBP] },
-                "$amountPaid.lbp",
-                0,
-              ],
-            },
-          },
-        },
-      },
-      {
-        $sort: { _id: 1 },
-      },
-    ]);
-
-    return sales.map((day) => ({
-      date: day._id,
-      totalSales: day.totalSales,
-      revenue: {
-        total: { usd: day.totalUsd, lbp: day.totalLbp },
-        usdPayments: day.usdPayments,
-        lbpPayments: day.lbpPayments,
-      },
-    }));
-  }
-
-  private async getWeeklyBreakdown(startDate: Date, endDate: Date) {
-    const sales = await Sale.aggregate([
-      {
-        $match: {
-          createdAt: { $gte: startDate, $lte: endDate },
-          status: SaleStatus.PAID,
-        },
-      },
-      {
-        $group: {
-          _id: {
-            $week: "$createdAt",
-          },
-          totalSales: { $sum: 1 },
-          totalUsd: { $sum: "$amountPaid.usd" },
-          totalLbp: { $sum: "$amountPaid.lbp" },
-        },
-      },
-      {
-        $sort: { _id: 1 },
-      },
-    ]);
-
-    return sales.map((week) => ({
-      week: week._id,
-      totalSales: week.totalSales,
-      revenue: { usd: week.totalUsd, lbp: week.totalLbp },
-    }));
-  }
-
-  private async getMonthlyBreakdown(startDate: Date, endDate: Date) {
-    const sales = await Sale.aggregate([
-      {
-        $match: {
-          createdAt: { $gte: startDate, $lte: endDate },
-          status: SaleStatus.PAID,
-        },
-      },
-      {
-        $group: {
-          _id: {
-            $month: "$createdAt",
-          },
-          totalSales: { $sum: 1 },
-          totalUsd: { $sum: "$amountPaid.usd" },
-          totalLbp: { $sum: "$amountPaid.lbp" },
-          usdPayments: {
-            $sum: {
-              $cond: [
-                { $eq: ["$paymentCurrency", Currency.USD] },
-                "$amountPaid.usd",
-                0,
-              ],
-            },
-          },
-          lbpPayments: {
-            $sum: {
-              $cond: [
-                { $eq: ["$paymentCurrency", Currency.LBP] },
-                "$amountPaid.lbp",
-                0,
-              ],
-            },
-          },
-        },
-      },
-      {
-        $sort: { _id: 1 },
-      },
-    ]);
-
-    return sales.map((month) => ({
-      month: month._id,
-      totalSales: month.totalSales,
-      revenue: {
-        total: { usd: month.totalUsd, lbp: month.totalLbp },
-        usdPayments: month.usdPayments,
-        lbpPayments: month.lbpPayments,
-      },
+  private dailyBreakdown(entries: LedgerEntry[], period: ResolvedPeriod) {
+    return bucketRows(entries, period).map((row) => ({
+      date: row.key,
+      totalSales: row.entries.length,
+      revenue: this.paymentSplit(row.entries),
     }));
   }
 
@@ -592,7 +274,11 @@ class ReportService {
       matchQuery.createdAt = { $gte: startDate, $lte: endDate };
     }
 
-    const pipeline: any[] = [{ $match: matchQuery }, { $unwind: "$items" }];
+    const pipeline: any[] = [
+      { $match: matchQuery },
+      { $unwind: "$items" },
+      { $match: { "items.kind": { $ne: "gaming" }, "items.product": { $ne: null } } },
+    ];
 
     if (productId) {
       pipeline.push({
@@ -628,7 +314,7 @@ class ReportService {
     const results = await Sale.aggregate(pipeline);
 
     return results.map((prod) => ({
-      productId: prod._id.toString(),
+      productId: prod._id ? prod._id.toString() : null,
       productName: prod.productName,
       productSku: prod.productSku,
       totalQuantitySold: prod.totalQuantity,
@@ -665,9 +351,6 @@ class ReportService {
     }
 
     const skip = (page - 1) * limit;
-
-    // Get gaming product IDs for categorization
-    const gamingProductIds = await this.getGamingProductIds();
 
     const [transactions, total] = await Promise.all([
       Sale.find(query)
@@ -708,8 +391,8 @@ class ReportService {
 
         // Map items with full details and type categorization
         const items = sale.items.map((item) => {
-          const isGaming = this.isGamingItem(item, gamingProductIds);
-          const isGamingSession = item.productSku?.startsWith("SESSION-");
+          const isGaming = isGamingLine(item);
+          const isGamingSession = isGaming;
 
           // Find linked gaming session for this item (if it's a session)
           let gamingSessionDetails = null;
@@ -810,7 +493,8 @@ class ReportService {
           paymentMethod: sale.paymentMethod,
           paymentCurrency: sale.paymentCurrency,
           status: sale.status,
-          cashier: (sale.cashier as any).name,
+          cashier: (sale.cashier as any)?.name ?? null,
+          source: sale.source ?? "pos",
           createdAt: sale.createdAt,
           notes: sale.notes || null,
         };
@@ -881,7 +565,7 @@ class ReportService {
         sale.paymentCurrency || "",
         sale.amountPaid.usd,
         sale.amountPaid.lbp,
-        (sale.cashier as any).name,
+        (sale.cashier as any)?.name ?? "",
         sale.status,
       ].join(",");
     });

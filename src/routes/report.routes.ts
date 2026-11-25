@@ -3,8 +3,18 @@ import reportController from "../controllers/report.controller";
 import { asyncHandler } from "../middlewares/asyncHandler";
 import { authenticate, authorize } from "../middlewares/auth.middleware";
 import { UserRole } from "../models/user.model";
+import { validateQuery } from "../middlewares/validation";
+import { ReportSummaryQueryDto } from "../dtos/report.dto";
 
 const router = Router();
+
+router.get(
+  "/summary",
+  authenticate,
+  authorize(UserRole.ADMIN, UserRole.MANAGER),
+  validateQuery(ReportSummaryQueryDto),
+  asyncHandler(reportController.getSummary)
+);
 
 router.get(
   "/daily",

@@ -14,6 +14,7 @@ import ReservationSettings, {
   IReservationSettings,
 } from "../models/reservationSettings.model";
 import { ApiError } from "../utils/apiError";
+import { businessWindow, BusinessWindow } from "../utils/businessHours";
 import logger from "../utils/logger";
 import {
   addDays,
@@ -22,8 +23,6 @@ import {
   isDateString,
   isTimeString,
   localDateString,
-  timeToMinutes,
-  weekdayOf,
   zonedDateTimeToUtc,
 } from "../utils/time";
 import gamingSessionService from "./gamingsession.service";
@@ -39,15 +38,6 @@ const EARLY_CHECKIN_MINUTES = 30;
 /** Max upcoming (confirmed) bookings one phone number can hold from the website. */
 const MAX_ACTIVE_PER_PHONE = 3;
 const CODE_ALPHABET = "ABCDEFGHJKMNPQRSTUVWXYZ23456789";
-
-export interface BusinessWindow {
-  date: string;
-  closed: boolean;
-  start: Date;
-  end: Date;
-  open: string;
-  close: string;
-}
 
 export interface CreateReservationInput {
   type: StationType;
@@ -180,18 +170,7 @@ class ReservationService {
 
   /** Opening window of a business day (a night past midnight belongs to the day it started). */
   getBusinessWindow(settings: IReservationSettings, date: string): BusinessWindow {
-    const day = settings.schedule.find((d) => d.day === weekdayOf(date)) ?? DEFAULT_SCHEDULE[weekdayOf(date)];
-    const openMin = timeToMinutes(day.open);
-    let closeMin = timeToMinutes(day.close);
-    if (closeMin <= openMin) closeMin += 24 * 60;
-    return {
-      date,
-      closed: day.closed,
-      open: day.open,
-      close: day.close,
-      start: zonedDateTimeToUtc(date, openMin, settings.timezone),
-      end: zonedDateTimeToUtc(date, closeMin, settings.timezone),
-    };
+    return businessWindow(settings.schedule, settings.timezone, date);
   }
 
   /** Finds the (open) business window that fully contains [start, end), if any. */

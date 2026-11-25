@@ -3,8 +3,17 @@ import { CustomRequest } from "../types";
 import reportService from "../services/report.service";
 import { ApiResponseUtil } from "../utils/apiResponse";
 import { ApiError } from "../utils/apiError";
+import summaryReportService from "../services/reports/summaryReport.service";
+import { ReportSummaryQueryDto } from "../dtos/report.dto";
 
 class ReportController {
+  /** Day / week / month / year summary (lounge timezone, paid orders = revenue). */
+  async getSummary(req: CustomRequest, res: Response, _next: NextFunction) {
+    const q = res.locals.query as ReportSummaryQueryDto;
+    const report = await summaryReportService.getSummary(q.period, q.date);
+    return ApiResponseUtil.success(res, report, "Report retrieved successfully");
+  }
+
   async getDailyReport(req: CustomRequest, res: Response, next: NextFunction) {
     const { date } = req.query;
 
